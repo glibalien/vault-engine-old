@@ -6,3 +6,4 @@ dist/
 .vault-engine/
 .DS_Store
 *.log
+scripts/

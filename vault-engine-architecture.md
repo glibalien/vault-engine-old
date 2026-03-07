@@ -106,7 +106,8 @@ vault-engine/
 │   │   └── vectors.ts            # Vector store interface (ChromaDB or sqlite-vss)
 │   │
 │   ├── schema/
-│   │   ├── loader.ts             # Reads .schemas/*.yaml from vault
+│   │   ├── loader.ts             # Reads .schemas/*.yaml from vault, resolves inheritance
+│   │   ├── merger.ts             # Multi-type field merging logic
 │   │   ├── validator.ts          # Validates node data against schema definitions
 │   │   ├── types.ts              # TypeScript types for schema system
 │   │   └── defaults.ts           # Built-in schemas (note, daily-note, etc.)
@@ -127,7 +128,7 @@ vault-engine/
 │   │   ├── server.ts             # MCP server setup + tool registration
 │   │   ├── tools/
 │   │   │   ├── query.ts          # search, filter, semantic-search, graph-traverse
-│   │   │   ├── read.ts           # get-node, get-file, get-schema, get-recent
+│   │   │   ├── read.ts           # get-node, get-file, list-types, get-recent
 │   │   │   ├── mutate.ts         # create-node, update-fields, add-link, move-node
 │   │   │   ├── schema.ts         # list-schemas, describe-schema, validate-node
 │   │   │   └── workflow.ts       # Higher-level: create-meeting-notes, extract-action-items
@@ -543,6 +544,13 @@ tool("get-recent", {
     limit: z.number().default(20),
   }
 });
+
+tool("list-types", {
+  description: "List all types that exist in indexed data, with node counts. Shows what types nodes actually have (from frontmatter), as opposed to list-schemas which shows what's defined in YAML. These can diverge — a schema can exist with no nodes using it, and nodes can have types with no schema definition.",
+  params: {
+    include_counts: z.boolean().default(true),
+  }
+});
 ```
 
 ### Mutation Tools
@@ -732,6 +740,10 @@ When the engine writes a file (via mutation), the watcher will pick it up. To av
 2. **Content hash check**: After writing, store the hash. When watcher fires, compare hash — if identical, skip.
 3. **Both**: Belt and suspenders.
 
+### Reference Resolution on Incremental Index
+
+When a file is added or changed, the indexer re-resolves all unresolved references across the vault — not just refs in the changed file. A newly added `Alice Smith.md` should resolve dangling `[[Alice Smith]]` refs in any existing node's relationships. This is a single indexed query over the relationships table filtered to unresolved targets, not a file scan, so the cost is acceptable.
+
 ---
 
 ## Configuration
@@ -795,23 +807,25 @@ logging:
 - [ ] File watcher with debounce
 - [ ] Incremental indexing (only changed files)
 - [ ] Full rebuild command
-- [ ] MCP tools: `get-node`, `query-nodes`, `get-recent`, `list-schemas`
+- [ ] MCP tools: `get-node`, `query-nodes`, `get-recent`, `list-types`
 - [ ] Basic FTS5 search
 
 **Milestone:** Agent can query the vault structurally: "find all nodes with types including task where status is todo" returns correct results.
 
 ### Phase 2: Schema System + Multi-Typing (Weeks 4–5)
 
-**Goal:** Schema definitions with inheritance and multi-type support.
+**Goal:** YAML-driven schema definitions with inheritance, multi-type field merging, validation on index, reference resolution, and schema introspection MCP tools.
 
-- [ ] YAML schema loader with `extends` support
+- [ ] Schema TypeScript types (`SchemaDefinition`, `FieldDefinition`, `ResolvedSchema`)
+- [ ] YAML schema loader with `extends` inheritance resolution
+- [ ] Schema storage in `schemas` DB table
 - [ ] Multi-type field merging (union fields from all types on a node)
 - [ ] Schema validation on index (warn, don't reject)
-- [ ] Reference resolution (wiki-link title → node ID via title lookup table)
-- [ ] Schema introspection MCP tools: `list-schemas`, `describe-schema`, `validate-node`
-- [ ] Computed field stubs (count, basic aggregations)
+- [ ] Reference resolution (wiki-link title → node ID lookup; incremental index does full pass over unresolved refs)
+- [ ] MCP tools: `list-schemas`, `describe-schema`, `validate-node`
+- [ ] Computed field evaluation (count, percentage aggregations)
 
-**Milestone:** Agent can ask "describe the work-task schema" and see inherited + own fields. Queries filter by any type in the multi-type array.
+**Milestone:** Agent can ask "describe the work-task schema" and see inherited + own fields. Indexing validates files against their schemas and reports warnings. Wiki-link references resolve to node IDs. Queries filter by any type in the multi-type array (already works from Phase 1, now schema-aware).
 
 ### Phase 3: Write Path (Weeks 6–8)
 
@@ -887,17 +901,19 @@ logging:
 
 8. **Embedding model: local via ollama, pluggable.** Default to `nomic-embed-text` for local. API option (OpenAI, etc.) available for users who want better embeddings.
 
+9. **Field name collisions in multi-typing: union enum values and warn.** If two types define the same field with compatible types, they share it. If incompatible (same name, different type), the engine warns and keeps both definitions. Enum fields with the same name get their value sets unioned.
+
+10. **Schema migration: leave existing files alone, warn on validation.** When a schema definition changes, existing files are not modified. Missing required fields get warnings on next index. The engine never writes default values into existing files on schema change.
+
+11. **Schema change does not trigger re-validation of existing nodes.** A change to `.schemas/*.yaml` triggers a full schema reload, but nodes are only re-validated on their next individual re-index. Full vault re-validation on schema change is expensive and unnecessary for a warn-don't-reject system.
+
 ---
 
 ## Open Questions
 
-1. **Field name collisions in multi-typing.** If `meeting` defines `status` as `[scheduled, completed, cancelled]` and `task` defines `status` as `[todo, in-progress, done, cancelled]`, what happens when a node has `types: [meeting, task]`? Proposed: union the enum values and warn. But this needs real-world testing.
+1. **Wiki-link target creation.** If the agent writes `assignee: "[[Alice Smith]]"` but no `Alice Smith.md` exists yet, should the engine auto-create a stub file? Or leave it as a dangling reference? Propose: agent explicitly creates person nodes; dangling refs are indexed but flagged.
 
-2. **Schema migration.** When a schema definition changes (e.g., you add a field to `task`), how do existing files get updated? Options: engine adds default values to existing files on next index, or leaves them alone and just validates going forward. Propose: leave alone + warn on missing required fields.
-
-3. **Wiki-link target creation.** If the agent writes `assignee: "[[Alice Smith]]"` but no `Alice Smith.md` exists yet, should the engine auto-create a stub file? Or leave it as a dangling reference? Propose: agent explicitly creates person nodes; dangling refs are indexed but flagged.
-
-4. **Concurrent editing.** User edits a file in their editor while the agent is writing to the same file via a mutation tool. Current approach: write lock + hash check. May need file-level locking or operational transform for robustness. Likely fine for v1 since conflicts should be rare.
+2. **Concurrent editing.** User edits a file in their editor while the agent is writing to the same file via a mutation tool. Current approach: write lock + hash check. May need file-level locking or operational transform for robustness. Likely fine for v1 since conflicts should be rare.
 
 ---
 
