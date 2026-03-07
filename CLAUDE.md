@@ -29,16 +29,17 @@ The core data flow: raw `.md` file → `ParsedFile` object.
 
 ```
 parseFile(filePath, raw)
-  ├── parseMarkdown(raw)         → MDAST (unified/remark + remarkFrontmatter)
-  ├── parseFrontmatter(raw)      → { data, content, types, fields, wikiLinks }  (gray-matter)
-  ├── extractWikiLinksFromMdast() → body wiki-links from MDAST text nodes
-  └── extractPlainText()         → plain text for FTS (strips wiki-link brackets)
+  ├── parseMarkdown(raw)         → MDAST with wikiLink nodes (unified/remark + remarkFrontmatter + remarkWikiLink)
+  ├── parseFrontmatter(raw)      → { data, content, types, fields, wikiLinks }  (gray-matter + regex)
+  ├── extractWikiLinksFromMdast() → body wiki-links from wikiLink AST nodes
+  └── extractPlainText()         → plain text for FTS (reads wikiLink node target/alias)
 ```
 
-- **`types.ts`** — Shared interfaces: `ParsedFile`, `WikiLink`, `FieldEntry`
-- **`markdown.ts`** — unified pipeline (remarkParse + remarkFrontmatter). Full file goes through remark so MDAST positions are correct relative to source.
-- **`frontmatter.ts`** — gray-matter wrapper. Infers field types (reference/list/date/number/boolean/string). Extracts wiki-links from frontmatter YAML values.
-- **`wiki-links.ts`** — Single regex `\[\[([^\]|]+)(?:\|([^\]]+))?\]\]` used for both frontmatter and body extraction. No third-party wiki-link plugin.
+- **`types.ts`** — Shared interfaces: `ParsedFile`, `WikiLink`, `WikiLinkNode`, `FieldEntry`. Module augmentation registers `WikiLinkNode` as mdast phrasing content.
+- **`remark-wiki-link.ts`** — Custom remark transform plugin. Splits `[[target]]` and `[[target|alias]]` in text nodes into first-class `wikiLink` AST nodes. Runs after remarkParse + remarkFrontmatter.
+- **`markdown.ts`** — unified pipeline (remarkParse + remarkFrontmatter + remarkWikiLink). `parseMarkdown` calls `runSync` to execute transforms. `extractPlainText` handles `wikiLink` nodes directly.
+- **`frontmatter.ts`** — gray-matter wrapper. Infers field types (reference/list/date/number/boolean/string). Extracts wiki-links from frontmatter YAML values via regex.
+- **`wiki-links.ts`** — `extractWikiLinksFromMdast` walks `wikiLink` AST nodes (not regex on text). `extractWikiLinksFromString` provides regex extraction for frontmatter values.
 - **`index.ts`** — `parseFile()` orchestrator, re-exports types.
 
 ### Key Design Decisions

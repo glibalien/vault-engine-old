@@ -45,9 +45,39 @@ A local-first, MCP-native knowledge graph engine that wraps clean markdown files
 ### Why `unified`/`remark` over regex or custom parsing
 
 - Produces a standard MDAST (Markdown Abstract Syntax Tree) that you can walk, transform, and serialize back.
-- Plugins exist for frontmatter, wiki-links, GFM tables, math, etc.
+- Plugins exist for frontmatter, GFM tables, math, etc.
 - Round-trip fidelity: `remark-stringify` can reproduce markdown from the AST with minimal drift.
 - You'll need AST manipulation for block ID injection, content extraction, and safe mutations.
+
+### Wiki-Link Parsing: Two Strategies by Context
+
+Wiki-links appear in two distinct contexts that require different extraction approaches:
+
+**Body content → Custom remark plugin (AST nodes).**
+Wiki-links in the document body (`## Notes\n\nTalk to [[Alice]] about the budget`) must be parsed as first-class AST nodes, not extracted via regex on text nodes. This is a ~40-50 line remark syntax extension that recognizes `[[target]]` and `[[target|alias]]` and emits a `wikiLink` node in the MDAST:
+
+```
+paragraph
+  text: "Talk to "
+  wikiLink (target: "Alice")        ← first-class node, not a text string
+  text: " about the budget"
+```
+
+This is critical because the engine owns the write path, and write operations include **rename refactoring**. When `Alice.md` is renamed to `Alice Smith.md`, the engine must update every reference across the vault. With AST nodes, this is a safe structural operation: parse → walk → transform `wikiLink` nodes → serialize. The AST knows the difference between a wiki-link and text that happens to look like one (e.g., inside a code block). Without AST nodes, you're doing regex find-and-replace on raw strings, which is fragile and error-prone for edge cases like:
+
+- `[[Alice]]` vs `[[Alice Cooper]]` (partial match risk)
+- `[[Alice|our contact]]` → `[[Alice Smith|our contact]]` (alias preservation)
+- Wiki-links inside fenced code blocks (must not be touched)
+- Multiple wiki-links on the same line
+
+The same AST-based approach is needed for any bulk refactoring: merging nodes, splitting nodes, changing schema type names, moving files and updating references.
+
+**Frontmatter values → Regex extraction.**
+Wiki-links in frontmatter (`assignee: "[[Alice Smith]]"`, `attendees: ["[[Alice]]", "[[Bob]]"]`) are embedded in YAML strings, not part of the MDAST. These must be extracted via regex (`/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g`) applied to parsed YAML values. This is unavoidable — frontmatter is parsed separately by `gray-matter` as structured data, not as markdown.
+
+For rename operations in frontmatter, the engine updates the YAML values directly (parse YAML → find matching strings → replace → serialize YAML), which is safe because frontmatter structure is simple and well-defined.
+
+**Summary:** Regex for frontmatter (no alternative), AST nodes for body content (safety and correctness require it).
 
 ---
 
@@ -61,9 +91,9 @@ vault-engine/
 │   │
 │   ├── parser/
 │   │   ├── markdown.ts           # unified/remark pipeline: md → MDAST
-│   │   ├── frontmatter.ts        # YAML frontmatter extraction + validation
+│   │   ├── remark-wiki-link.ts   # Custom remark syntax plugin: parses [[target|alias]] into wikiLink AST nodes
+│   │   ├── frontmatter.ts        # YAML frontmatter extraction + validation (gray-matter + regex for wiki-links in values)
 │   │   ├── block-ids.ts          # Block ID assignment + stability logic
-│   │   ├── wiki-links.ts         # [[link]] and [[link|alias]] extraction
 │   │   └── inline-fields.ts      # Dataview-style key:: value parsing
 │   │
 │   ├── db/
@@ -552,6 +582,15 @@ tool("add-relationship", {
   }
 });
 
+tool("rename-node", {
+  description: "Rename a node: updates the file name, title, and all wiki-links referencing this node across the entire vault. Uses AST-based transformation for body content (safe around code blocks, preserves aliases) and YAML-aware replacement for frontmatter references. Example: rename 'Alice' to 'Alice Smith' updates every [[Alice]] to [[Alice Smith]] and [[Alice|our contact]] to [[Alice Smith|our contact]] in all files.",
+  params: {
+    node_id: z.string().describe("ID of the node to rename"),
+    new_title: z.string().describe("New title for the node"),
+    new_path: z.string().optional().describe("New file path; if omitted, derived from new_title using schema's filename_template"),
+  }
+});
+
 tool("batch-mutate", {
   description: "Execute multiple mutations atomically",
   params: {
@@ -749,8 +788,9 @@ logging:
 **Goal:** Index a vault into SQLite, serve read queries via MCP.
 
 - [ ] Markdown parser pipeline (unified/remark → MDAST)
-- [ ] Frontmatter extraction with `types` array support
-- [ ] Wiki-link extraction (frontmatter refs + body links)
+- [ ] Custom remark plugin: parse `[[target|alias]]` into first-class `wikiLink` AST nodes
+- [ ] Frontmatter extraction with `types` array support (gray-matter + regex for wiki-links in YAML values)
+- [ ] Wiki-link extraction from body via AST node walking (not regex on text nodes)
 - [ ] SQLite schema creation + node/node_types/field/relationship insertion
 - [ ] File watcher with debounce
 - [ ] Incremental indexing (only changed files)
@@ -781,6 +821,7 @@ logging:
 - [ ] `create-node` tool with multi-type schema validation
 - [ ] `update-node` tool (field updates, body append/replace)
 - [ ] `add-relationship` tool (writes wiki-links into frontmatter or body)
+- [ ] `rename-node` tool (renames file + updates all wiki-link references vault-wide via AST transformation for body, YAML-aware replacement for frontmatter)
 - [ ] Write lock / hash check to prevent watcher loops
 - [ ] Batch mutation support (`batch-mutate` tool)
 - [ ] File path generation from schema `filename_template`
