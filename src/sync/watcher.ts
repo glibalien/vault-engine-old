@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { relative } from 'node:path';
+import { relative, join } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type Database from 'better-sqlite3';
 import { parseFile } from '../parser/index.js';
@@ -22,6 +22,7 @@ export function isWriteLocked(relativePath: string): boolean {
 export interface WatcherOptions {
   debounceMs?: number;
   ignorePaths?: string[];
+  onSchemaChange?: () => void;
 }
 
 export function watchVault(
@@ -105,12 +106,40 @@ export function watchVault(
     watcher.on('ready', resolve);
   });
 
+  let schemaWatcher: FSWatcher | undefined;
+  if (opts?.onSchemaChange) {
+    const schemasDir = join(vaultPath, '.schemas');
+    const onSchemaChange = opts.onSchemaChange;
+
+    schemaWatcher = watch(schemasDir, {
+      ignoreInitial: true,
+      ignored: (path: string, stats?: import('node:fs').Stats) => {
+        if (!stats || stats.isDirectory()) return false;
+        return !path.endsWith('.yaml') && !path.endsWith('.yml');
+      },
+    });
+
+    let schemaTimer: ReturnType<typeof setTimeout> | undefined;
+    const schemaDebounce = () => {
+      if (schemaTimer) clearTimeout(schemaTimer);
+      schemaTimer = setTimeout(() => {
+        schemaTimer = undefined;
+        onSchemaChange();
+      }, debounceMs);
+    };
+
+    schemaWatcher.on('add', schemaDebounce);
+    schemaWatcher.on('change', schemaDebounce);
+    schemaWatcher.on('unlink', schemaDebounce);
+  }
+
   return {
     ready,
-    close: () => {
+    close: async () => {
       for (const timer of timers.values()) clearTimeout(timer);
       timers.clear();
-      return watcher.close();
+      await watcher.close();
+      if (schemaWatcher) await schemaWatcher.close();
     },
   };
 }
