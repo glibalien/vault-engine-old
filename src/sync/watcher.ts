@@ -3,7 +3,7 @@ import { relative } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type Database from 'better-sqlite3';
 import { parseFile } from '../parser/index.js';
-import { indexFile } from './indexer.js';
+import { indexFile, deleteFile } from './indexer.js';
 
 const writeLocks = new Set<string>();
 
@@ -79,6 +79,19 @@ export function watchVault(
 
   watcher.on('add', handleAddOrChange);
   watcher.on('change', handleAddOrChange);
+
+  watcher.on('unlink', (absPath: string) => {
+    const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
+    if (isWriteLocked(rel)) return;
+
+    debounced(rel, () => {
+      try {
+        deleteFile(db, rel);
+      } catch (err) {
+        console.error(`[vault-engine] failed to delete ${rel}:`, err);
+      }
+    });
+  });
 
   const ready = new Promise<void>((resolve) => {
     watcher.on('ready', resolve);

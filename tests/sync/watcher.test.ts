@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Database from 'better-sqlite3';
@@ -98,5 +98,25 @@ describe('watchVault', () => {
 
     const node = db.prepare('SELECT content_text FROM nodes WHERE id = ?').get('test.md') as any;
     expect(node.content_text).toContain('Updated');
+  });
+
+  it('removes node from DB when .md file is deleted', async () => {
+    handle = watchVault(db, tmpVault);
+    await handle.ready;
+
+    writeFileSync(join(tmpVault, 'test.md'), '# ToDelete');
+
+    await waitFor(() =>
+      db.prepare('SELECT * FROM nodes WHERE id = ?').get('test.md') !== undefined,
+    );
+
+    unlinkSync(join(tmpVault, 'test.md'));
+
+    await waitFor(() =>
+      db.prepare('SELECT * FROM nodes WHERE id = ?').get('test.md') === undefined,
+    );
+
+    expect(db.prepare('SELECT * FROM nodes WHERE id = ?').get('test.md')).toBeUndefined();
+    expect(db.prepare('SELECT * FROM files WHERE path = ?').get('test.md')).toBeUndefined();
   });
 });
