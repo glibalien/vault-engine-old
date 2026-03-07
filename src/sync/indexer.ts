@@ -1,6 +1,19 @@
 import { createHash } from 'node:crypto';
+import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { relative, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { ParsedFile } from '../parser/index.js';
+import { parseFile } from '../parser/index.js';
+
+function globMd(dir: string): string[] {
+  const results: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true, recursive: true })) {
+    if (entry.isFile() && entry.name.endsWith('.md')) {
+      results.push(join(entry.parentPath, entry.name));
+    }
+  }
+  return results;
+}
 
 function stringifyValue(value: unknown, valueType: string): string {
   if (value instanceof Date) return value.toISOString();
@@ -70,4 +83,39 @@ export function indexFile(
     INSERT OR REPLACE INTO files (path, mtime, hash)
     VALUES (?, ?, ?)
   `).run(relativePath, mtime, hash);
+}
+
+export function rebuildIndex(
+  db: Database.Database,
+  vaultPath: string,
+): { filesIndexed: number } {
+  const mdFiles = globMd(vaultPath);
+
+  const run = db.transaction(() => {
+    // Clear all tables (children before parents for FK order)
+    db.prepare('DELETE FROM relationships').run();
+    db.prepare('DELETE FROM fields').run();
+    db.prepare('DELETE FROM node_types').run();
+    db.prepare('DELETE FROM nodes').run();
+    db.prepare('DELETE FROM files').run();
+
+    let filesIndexed = 0;
+    for (const absPath of mdFiles) {
+      const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
+      const raw = readFileSync(absPath, 'utf-8');
+      const mtime = statSync(absPath).mtime.toISOString();
+
+      try {
+        const parsed = parseFile(rel, raw);
+        indexFile(db, parsed, rel, mtime, raw);
+        filesIndexed++;
+      } catch {
+        // Skip files that fail to parse
+      }
+    }
+
+    return { filesIndexed };
+  });
+
+  return run();
 }

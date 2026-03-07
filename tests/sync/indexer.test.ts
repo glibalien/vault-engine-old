@@ -4,7 +4,7 @@ import { resolve } from 'path';
 import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
-import { indexFile } from '../../src/sync/indexer.js';
+import { indexFile, rebuildIndex } from '../../src/sync/indexer.js';
 
 const fixturesDir = resolve(import.meta.dirname, '../fixtures');
 
@@ -161,5 +161,91 @@ describe('indexFile', () => {
 
     const file = db.prepare('SELECT * FROM files WHERE path = ?').get('tasks/review.md') as any;
     expect(file.mtime).toBe('2025-03-11T00:00:00.000Z');
+  });
+});
+
+describe('rebuildIndex', () => {
+  let db: Database.Database;
+  const vaultDir = resolve(import.meta.dirname, '../fixtures/vault');
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('indexes all .md files in the vault directory', () => {
+    const result = rebuildIndex(db, vaultDir);
+
+    expect(result.filesIndexed).toBe(3);
+
+    const nodes = db.prepare('SELECT id FROM nodes ORDER BY id').all() as any[];
+    expect(nodes.map(n => n.id)).toEqual([
+      'notes/plain-note.md',
+      'people/alice-smith.md',
+      'tasks/review-vendor-proposals.md',
+    ]);
+  });
+
+  it('populates node_types from frontmatter', () => {
+    rebuildIndex(db, vaultDir);
+
+    const taskTypes = db.prepare(
+      "SELECT schema_type FROM node_types WHERE node_id = 'tasks/review-vendor-proposals.md'"
+    ).all() as any[];
+    expect(taskTypes.map(t => t.schema_type)).toEqual(['task']);
+
+    const personTypes = db.prepare(
+      "SELECT schema_type FROM node_types WHERE node_id = 'people/alice-smith.md'"
+    ).all() as any[];
+    expect(personTypes.map(t => t.schema_type)).toEqual(['person']);
+  });
+
+  it('populates relationships across files', () => {
+    rebuildIndex(db, vaultDir);
+
+    const rels = db.prepare('SELECT source_id, target_id, rel_type FROM relationships ORDER BY source_id, target_id')
+      .all() as any[];
+    expect(rels.length).toBeGreaterThan(0);
+
+    const assignee = rels.find(r => r.source_id === 'tasks/review-vendor-proposals.md' && r.target_id === 'Bob Jones');
+    expect(assignee).toBeDefined();
+    expect(assignee.rel_type).toBe('assignee');
+  });
+
+  it('populates the files table with mtime and hash', () => {
+    rebuildIndex(db, vaultDir);
+
+    const files = db.prepare('SELECT * FROM files ORDER BY path').all() as any[];
+    expect(files).toHaveLength(3);
+    for (const f of files) {
+      expect(f.mtime).toBeTruthy();
+      expect(f.hash).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  it('clears old data on rebuild', () => {
+    rebuildIndex(db, vaultDir);
+
+    db.prepare(
+      `INSERT INTO nodes (id, file_path, node_type, content_text, content_md)
+       VALUES ('stale.md', 'stale.md', 'file', 'old', '# old')`
+    ).run();
+
+    rebuildIndex(db, vaultDir);
+
+    const stale = db.prepare('SELECT * FROM nodes WHERE id = ?').get('stale.md');
+    expect(stale).toBeUndefined();
+  });
+
+  it('FTS5 indexes content from rebuilt vault', () => {
+    rebuildIndex(db, vaultDir);
+
+    const results = db.prepare("SELECT * FROM nodes_fts WHERE nodes_fts MATCH 'vendor'").all();
+    expect(results.length).toBeGreaterThan(0);
   });
 });
