@@ -4,6 +4,7 @@ import { relative, join, basename } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { ParsedFile } from '../parser/index.js';
 import { parseFile } from '../parser/index.js';
+import { resolveReferences } from './resolver.js';
 
 function globMd(dir: string): string[] {
   const results: string[] = [];
@@ -161,6 +162,8 @@ export function incrementalIndex(
       deleted++;
     }
 
+    resolveReferences(db);
+
     return { indexed, skipped, deleted };
   });
 
@@ -195,6 +198,8 @@ export function rebuildIndex(
         // Skip files that fail to parse
       }
     }
+
+    resolveReferences(db);
 
     return { filesIndexed };
   });

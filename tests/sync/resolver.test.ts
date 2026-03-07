@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
-import { indexFile } from '../../src/sync/indexer.js';
+import { indexFile, rebuildIndex, incrementalIndex } from '../../src/sync/indexer.js';
 import { resolveTarget, resolveReferences } from '../../src/sync/resolver.js';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve, join } from 'path';
 
 const fixturesDir = resolve(import.meta.dirname, '../fixtures');
 
@@ -246,5 +247,81 @@ describe('resolveReferences', () => {
 
     expect(result.resolved).toBe(1);
     expect(result.unresolved).toBe(1);
+  });
+});
+
+describe('reference resolution integration', () => {
+  let db: Database.Database;
+  let tmpVault: string;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-ref-test-'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpVault, { recursive: true, force: true });
+  });
+
+  function writeVaultFile(relPath: string, content: string) {
+    const abs = join(tmpVault, relPath);
+    mkdirSync(join(abs, '..'), { recursive: true });
+    writeFileSync(abs, content, 'utf-8');
+  }
+
+  it('rebuildIndex resolves references after indexing all files', () => {
+    writeVaultFile('people/alice.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    writeVaultFile('tasks/todo.md', '---\ntitle: Review\nassignee: "[[Alice Smith]]"\n---\nDo it.');
+
+    rebuildIndex(db, tmpVault);
+
+    const rel = db.prepare(
+      "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/todo.md' AND target_id = 'Alice Smith'"
+    ).get() as any;
+    expect(rel.resolved_target_id).toBe('people/alice.md');
+  });
+
+  it('incrementalIndex resolves references including newly added files', () => {
+    writeVaultFile('tasks/todo.md', '---\ntitle: Review\nassignee: "[[Alice Smith]]"\n---\nDo it.');
+    incrementalIndex(db, tmpVault);
+
+    // Dangling ref
+    let rel = db.prepare(
+      "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/todo.md' AND target_id = 'Alice Smith'"
+    ).get() as any;
+    expect(rel.resolved_target_id).toBeNull();
+
+    // Add the target file
+    writeVaultFile('people/alice.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    incrementalIndex(db, tmpVault);
+
+    rel = db.prepare(
+      "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/todo.md' AND target_id = 'Alice Smith'"
+    ).get() as any;
+    expect(rel.resolved_target_id).toBe('people/alice.md');
+  });
+
+  it('incrementalIndex clears stale refs when target file is deleted', () => {
+    writeVaultFile('people/alice.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    writeVaultFile('tasks/todo.md', '---\ntitle: Review\nassignee: "[[Alice Smith]]"\n---\nDo it.');
+    incrementalIndex(db, tmpVault);
+
+    // Resolved
+    let rel = db.prepare(
+      "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/todo.md' AND target_id = 'Alice Smith'"
+    ).get() as any;
+    expect(rel.resolved_target_id).toBe('people/alice.md');
+
+    // Delete the target file
+    rmSync(join(tmpVault, 'people/alice.md'));
+    incrementalIndex(db, tmpVault);
+
+    rel = db.prepare(
+      "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/todo.md' AND target_id = 'Alice Smith'"
+    ).get() as any;
+    expect(rel.resolved_target_id).toBeNull();
   });
 });

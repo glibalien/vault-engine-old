@@ -4,6 +4,7 @@ import { watch, type FSWatcher } from 'chokidar';
 import type Database from 'better-sqlite3';
 import { parseFile } from '../parser/index.js';
 import { indexFile, deleteFile } from './indexer.js';
+import { resolveReferences } from './resolver.js';
 
 const writeLocks = new Set<string>();
 
@@ -73,6 +74,7 @@ export function watchVault(
         const parsed = parseFile(rel, raw);
         db.transaction(() => {
           indexFile(db, parsed, rel, mtime, raw);
+          resolveReferences(db);
         })();
       } catch (err) {
         console.error(`[vault-engine] failed to index ${rel}:`, err);
@@ -95,6 +97,7 @@ export function watchVault(
       try {
         db.transaction(() => {
           deleteFile(db, rel);
+          resolveReferences(db);
         })();
       } catch (err) {
         console.error(`[vault-engine] failed to delete ${rel}:`, err);
