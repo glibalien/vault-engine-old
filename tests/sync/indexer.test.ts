@@ -27,8 +27,8 @@ describe('indexFile', () => {
   }
 
   it('inserts a node row with correct fields', () => {
-    const { parsed } = loadAndParse('sample-task.md', 'tasks/review-vendor-proposals.md');
-    indexFile(db, parsed, 'tasks/review-vendor-proposals.md', '2025-03-10T00:00:00.000Z');
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review-vendor-proposals.md');
+    indexFile(db, parsed, 'tasks/review-vendor-proposals.md', '2025-03-10T00:00:00.000Z', raw);
 
     const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get('tasks/review-vendor-proposals.md') as any;
     expect(node).toBeDefined();
@@ -41,8 +41,8 @@ describe('indexFile', () => {
   });
 
   it('inserts node_types for each type', () => {
-    const { parsed } = loadAndParse('sample-meeting.md', 'meetings/q1-planning.md');
-    indexFile(db, parsed, 'meetings/q1-planning.md', '2025-03-06T00:00:00.000Z');
+    const { parsed, raw } = loadAndParse('sample-meeting.md', 'meetings/q1-planning.md');
+    indexFile(db, parsed, 'meetings/q1-planning.md', '2025-03-06T00:00:00.000Z', raw);
 
     const types = db.prepare('SELECT schema_type FROM node_types WHERE node_id = ? ORDER BY schema_type')
       .all('meetings/q1-planning.md') as any[];
@@ -50,16 +50,17 @@ describe('indexFile', () => {
   });
 
   it('inserts no node_types when types array is empty', () => {
-    const parsed = parseFile('notes/plain.md', 'Just a plain note.');
-    indexFile(db, parsed, 'notes/plain.md', '2025-03-10T00:00:00.000Z');
+    const raw = 'Just a plain note.';
+    const parsed = parseFile('notes/plain.md', raw);
+    indexFile(db, parsed, 'notes/plain.md', '2025-03-10T00:00:00.000Z', raw);
 
     const types = db.prepare('SELECT * FROM node_types WHERE node_id = ?').all('notes/plain.md');
     expect(types).toHaveLength(0);
   });
 
   it('inserts fields with correct value mappings', () => {
-    const { parsed } = loadAndParse('sample-task.md', 'tasks/review.md');
-    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z');
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
 
     const fields = db.prepare('SELECT * FROM fields WHERE node_id = ? ORDER BY key')
       .all('tasks/review.md') as any[];
@@ -80,7 +81,7 @@ describe('indexFile', () => {
   it('populates value_number for number fields', () => {
     const raw = '---\ntitle: Test\ncount: 42\n---\nBody.';
     const parsed = parseFile('test.md', raw);
-    indexFile(db, parsed, 'test.md', '2025-03-10T00:00:00.000Z');
+    indexFile(db, parsed, 'test.md', '2025-03-10T00:00:00.000Z', raw);
 
     const field = db.prepare('SELECT * FROM fields WHERE node_id = ? AND key = ?')
       .get('test.md', 'count') as any;
@@ -90,8 +91,8 @@ describe('indexFile', () => {
   });
 
   it('populates value_date for date fields', () => {
-    const { parsed } = loadAndParse('sample-task.md', 'tasks/review.md');
-    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z');
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
 
     const field = db.prepare('SELECT * FROM fields WHERE node_id = ? AND key = ?')
       .get('tasks/review.md', 'due_date') as any;
@@ -100,12 +101,50 @@ describe('indexFile', () => {
   });
 
   it('serializes list fields as JSON', () => {
-    const { parsed } = loadAndParse('sample-person.md', 'people/alice.md');
-    indexFile(db, parsed, 'people/alice.md', '2025-03-10T00:00:00.000Z');
+    const { parsed, raw } = loadAndParse('sample-person.md', 'people/alice.md');
+    indexFile(db, parsed, 'people/alice.md', '2025-03-10T00:00:00.000Z', raw);
 
     const field = db.prepare('SELECT * FROM fields WHERE node_id = ? AND key = ?')
       .get('people/alice.md', 'tags') as any;
     expect(field.value_type).toBe('list');
     expect(JSON.parse(field.value_text)).toEqual(['engineering', 'leadership']);
+  });
+
+  it('inserts relationships for frontmatter wiki-links with field name as rel_type', () => {
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const rels = db.prepare('SELECT * FROM relationships WHERE source_id = ? ORDER BY target_id')
+      .all('tasks/review.md') as any[];
+    const assignee = rels.find(r => r.target_id === 'Bob Jones');
+    expect(assignee).toBeDefined();
+    expect(assignee.rel_type).toBe('assignee');
+
+    const source = rels.find(r => r.target_id === 'Q1 Planning Meeting');
+    expect(source).toBeDefined();
+    expect(source.rel_type).toBe('source');
+  });
+
+  it('inserts relationships for body wiki-links with rel_type "wiki-link"', () => {
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const rels = db.prepare(
+      "SELECT * FROM relationships WHERE source_id = ? AND rel_type = 'wiki-link'"
+    ).all('tasks/review.md') as any[];
+    const targets = rels.map(r => r.target_id);
+    expect(targets).toContain('Acme Corp Proposal');
+    expect(targets).toContain('Globex Proposal');
+    expect(targets).toContain('Alice Smith');
+  });
+
+  it('inserts into the files table with mtime and hash', () => {
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const file = db.prepare('SELECT * FROM files WHERE path = ?').get('tasks/review.md') as any;
+    expect(file).toBeDefined();
+    expect(file.mtime).toBe('2025-03-10T00:00:00.000Z');
+    expect(file.hash).toMatch(/^[a-f0-9]{64}$/);
   });
 });

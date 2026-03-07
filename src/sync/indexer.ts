@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ParsedFile } from '../parser/index.js';
 
@@ -12,6 +13,7 @@ export function indexFile(
   parsed: ParsedFile,
   relativePath: string,
   mtime: string,
+  raw: string,
 ): void {
   // Delete existing child rows
   db.prepare('DELETE FROM relationships WHERE source_id = ?').run(relativePath);
@@ -47,4 +49,25 @@ export function indexFile(
         : null,
     );
   }
+
+  // Insert relationships
+  const insertRel = db.prepare(`
+    INSERT INTO relationships (source_id, target_id, rel_type, context)
+    VALUES (?, ?, ?, ?)
+  `);
+  for (const link of parsed.wikiLinks) {
+    insertRel.run(
+      relativePath,
+      link.target,
+      link.field ?? 'wiki-link',
+      link.context ?? null,
+    );
+  }
+
+  // Upsert files row
+  const hash = createHash('sha256').update(raw).digest('hex');
+  db.prepare(`
+    INSERT OR REPLACE INTO files (path, mtime, hash)
+    VALUES (?, ?, ?)
+  `).run(relativePath, mtime, hash);
 }
