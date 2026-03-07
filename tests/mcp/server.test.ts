@@ -129,4 +129,75 @@ describe('MCP server', () => {
       expect(data.relationships).toBeUndefined();
     });
   });
+
+  describe('get-recent', () => {
+    it('returns nodes ordered by updated_at descending', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+      indexFixture(db, 'sample-person.md', 'people/alice.md');
+
+      const result = await client.callTool({
+        name: 'get-recent',
+        arguments: {},
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data).toHaveLength(2);
+      // Both have same mtime, so just check structure
+      expect(data[0].id).toBeDefined();
+      expect(data[0].types).toBeDefined();
+      expect(data[0].fields).toBeDefined();
+      // content_md should NOT be included (compact response)
+      expect(data[0].content_md).toBeUndefined();
+    });
+
+    it('filters by schema_type', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+      indexFixture(db, 'sample-person.md', 'people/alice.md');
+
+      const result = await client.callTool({
+        name: 'get-recent',
+        arguments: { schema_type: 'person' },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('people/alice.md');
+    });
+
+    it('filters by since date', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      // The node's updated_at is set by SQLite datetime('now'), so use a past date
+      const result = await client.callTool({
+        name: 'get-recent',
+        arguments: { since: '2020-01-01T00:00:00.000Z' },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data).toHaveLength(1);
+
+      // Future date should return nothing
+      const result2 = await client.callTool({
+        name: 'get-recent',
+        arguments: { since: '2099-01-01T00:00:00.000Z' },
+      });
+
+      const data2 = JSON.parse((result2.content as Array<{ text: string }>)[0].text);
+      expect(data2).toHaveLength(0);
+    });
+
+    it('respects limit', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+      indexFixture(db, 'sample-person.md', 'people/alice.md');
+      indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+
+      const result = await client.callTool({
+        name: 'get-recent',
+        arguments: { limit: 1 },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data).toHaveLength(1);
+    });
+  });
 });
