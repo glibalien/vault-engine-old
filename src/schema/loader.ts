@@ -5,11 +5,16 @@ import { parse as parseYaml } from 'yaml';
 import type Database from 'better-sqlite3';
 import type { SchemaDefinition, ResolvedSchema } from './types.js';
 
-function readSchemaFiles(schemasDir: string): SchemaDefinition[] {
+interface ParsedSchema {
+  definition: SchemaDefinition;
+  sourceFile: string;
+}
+
+function readSchemaFiles(schemasDir: string): ParsedSchema[] {
   if (!existsSync(schemasDir)) return [];
 
   const files = readdirSync(schemasDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
-  const schemas: SchemaDefinition[] = [];
+  const results: ParsedSchema[] = [];
 
   for (const file of files) {
     const absPath = join(schemasDir, file);
@@ -20,24 +25,36 @@ function readSchemaFiles(schemasDir: string): SchemaDefinition[] {
       throw new Error(`Schema file '${absPath}' is missing required 'name' field`);
     }
 
-    schemas.push({
-      name: parsed.name,
-      display_name: parsed.display_name,
-      icon: parsed.icon,
-      extends: parsed.extends,
-      fields: parsed.fields ?? {},
-      serialization: parsed.serialization,
-      computed: parsed.computed,
+    const existing = results.find(r => r.definition.name === parsed.name);
+    if (existing) {
+      throw new Error(
+        `Duplicate schema name '${parsed.name}' found in '${file}' and '${existing.sourceFile}'`
+      );
+    }
+
+    results.push({
+      definition: {
+        name: parsed.name,
+        display_name: parsed.display_name,
+        icon: parsed.icon,
+        extends: parsed.extends,
+        fields: parsed.fields ?? {},
+        serialization: parsed.serialization,
+        computed: parsed.computed,
+      },
+      sourceFile: file,
     });
   }
 
-  return schemas;
+  return results;
 }
 
-function resolveInheritance(schemas: SchemaDefinition[]): ResolvedSchema[] {
+function resolveInheritance(parsed: ParsedSchema[]): { resolved: ResolvedSchema[]; sourceFiles: Map<string, string> } {
   const byName = new Map<string, SchemaDefinition>();
-  for (const s of schemas) {
-    byName.set(s.name, s);
+  const sourceFiles = new Map<string, string>();
+  for (const p of parsed) {
+    byName.set(p.definition.name, p.definition);
+    sourceFiles.set(p.definition.name, p.sourceFile);
   }
 
   // Topological sort with cycle detection
@@ -88,13 +105,13 @@ function resolveInheritance(schemas: SchemaDefinition[]): ResolvedSchema[] {
     resolve(name, []);
   }
 
-  return [...resolved.values()];
+  return { resolved: [...resolved.values()], sourceFiles };
 }
 
 export function loadSchemas(db: Database.Database, vaultPath: string): void {
   const schemasDir = join(vaultPath, '.schemas');
-  const definitions = readSchemaFiles(schemasDir);
-  const resolvedSchemas = resolveInheritance(definitions);
+  const parsed = readSchemaFiles(schemasDir);
+  const { resolved: resolvedSchemas, sourceFiles } = resolveInheritance(parsed);
 
   const run = db.transaction(() => {
     db.prepare('DELETE FROM schemas').run();
@@ -106,7 +123,7 @@ export function loadSchemas(db: Database.Database, vaultPath: string): void {
       insert.run(
         schema.name,
         JSON.stringify(schema),
-        join('.schemas', `${schema.name}.yaml`),
+        join('.schemas', sourceFiles.get(schema.name)!),
       );
     }
   });
