@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractWikiLinksFromString, extractWikiLinksFromMdast } from '../../src/parser/wiki-links.js';
+import { extractWikiLinksFromString, extractWikiLinksFromMdast, stripWikiLinks } from '../../src/parser/wiki-links.js';
 
 describe('extractWikiLinksFromString', () => {
   it('extracts a simple wiki-link', () => {
@@ -100,5 +100,19 @@ describe('extractWikiLinksFromMdast', () => {
     const result = extractWikiLinksFromMdast(mdast as any);
     expect(result).toHaveLength(1);
     expect(result[0].target).toBe('Real Link');
+  });
+});
+
+describe('stripWikiLinks', () => {
+  it('replaces [[target]] with target', () => {
+    expect(stripWikiLinks('See [[Bob Jones]]')).toBe('See Bob Jones');
+  });
+
+  it('replaces [[target|alias]] with target', () => {
+    expect(stripWikiLinks('See [[Bob Jones|Bob]]')).toBe('See Bob Jones');
+  });
+
+  it('handles multiple links', () => {
+    expect(stripWikiLinks('[[Alice]] and [[Bob]]')).toBe('Alice and Bob');
   });
 });

@@ -37,7 +37,7 @@ function visit(node: any, links: WikiLink[]): void {
         target: link.target,
         alias: link.alias,
         source: 'body',
-        context: node.value.replace(WIKI_LINK_RE, (_: string, target: string) => target),
+        context: stripWikiLinks(node.value),
         position: node.position,
       });
     }
