@@ -93,6 +93,73 @@ export function deleteFile(db: Database.Database, relativePath: string): void {
   db.prepare('DELETE FROM files WHERE path = ?').run(relativePath);
 }
 
+export function incrementalIndex(
+  db: Database.Database,
+  vaultPath: string,
+): { indexed: number; skipped: number; deleted: number } {
+  const mdFiles = globMd(vaultPath);
+
+  const run = db.transaction(() => {
+    // Load existing file records into a map
+    const existingFiles = new Map<string, { mtime: string; hash: string }>();
+    const rows = db.prepare('SELECT path, mtime, hash FROM files').all() as Array<{ path: string; mtime: string; hash: string }>;
+    for (const row of rows) {
+      existingFiles.set(row.path, { mtime: row.mtime, hash: row.hash });
+    }
+
+    let indexed = 0;
+    let skipped = 0;
+
+    for (const absPath of mdFiles) {
+      const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
+      const mtime = statSync(absPath).mtime.toISOString();
+      const existing = existingFiles.get(rel);
+
+      // Mark as seen
+      existingFiles.delete(rel);
+
+      if (existing && existing.mtime === mtime) {
+        // Mtime matches — skip
+        skipped++;
+        continue;
+      }
+
+      const raw = readFileSync(absPath, 'utf-8');
+
+      if (existing) {
+        // Mtime differs — check hash
+        const hash = createHash('sha256').update(raw).digest('hex');
+        if (hash === existing.hash) {
+          // Content unchanged — just update mtime
+          db.prepare('UPDATE files SET mtime = ? WHERE path = ?').run(mtime, rel);
+          skipped++;
+          continue;
+        }
+      }
+
+      // New file or content changed — parse and index
+      try {
+        const parsed = parseFile(rel, raw);
+        indexFile(db, parsed, rel, mtime, raw);
+        indexed++;
+      } catch {
+        // Skip files that fail to parse
+      }
+    }
+
+    // Delete files that are in DB but no longer on disk
+    let deleted = 0;
+    for (const [path] of existingFiles) {
+      deleteFile(db, path);
+      deleted++;
+    }
+
+    return { indexed, skipped, deleted };
+  });
+
+  return run();
+}
+
 export function rebuildIndex(
   db: Database.Database,
   vaultPath: string,

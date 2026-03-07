@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync } from 'fs';
+import { tmpdir } from 'os';
+import { resolve, join } from 'path';
 import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
-import { indexFile, rebuildIndex, deleteFile } from '../../src/sync/indexer.js';
+import { indexFile, rebuildIndex, deleteFile, incrementalIndex } from '../../src/sync/indexer.js';
 
 const fixturesDir = resolve(import.meta.dirname, '../fixtures');
 
@@ -295,5 +296,53 @@ describe('rebuildIndex', () => {
 
     const results = db.prepare("SELECT * FROM nodes_fts WHERE nodes_fts MATCH 'vendor'").all();
     expect(results.length).toBeGreaterThan(0);
+  });
+});
+
+describe('incrementalIndex', () => {
+  let db: Database.Database;
+  let tmpVault: string;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-test-'));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpVault, { recursive: true, force: true });
+  });
+
+  function writeVaultFile(relPath: string, content: string) {
+    const abs = join(tmpVault, relPath);
+    mkdirSync(join(abs, '..'), { recursive: true });
+    writeFileSync(abs, content, 'utf-8');
+  }
+
+  it('indexes all files when DB is empty', () => {
+    writeVaultFile('notes/hello.md', '# Hello\nWorld.');
+    writeVaultFile('notes/bye.md', '# Bye\nSee you.');
+
+    const result = incrementalIndex(db, tmpVault);
+
+    expect(result.indexed).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect(result.deleted).toBe(0);
+
+    const nodes = db.prepare('SELECT id FROM nodes ORDER BY id').all() as any[];
+    expect(nodes.map(n => n.id)).toEqual(['notes/bye.md', 'notes/hello.md']);
+  });
+
+  it('populates files table with mtime and hash', () => {
+    writeVaultFile('test.md', '# Test');
+
+    incrementalIndex(db, tmpVault);
+
+    const file = db.prepare('SELECT * FROM files WHERE path = ?').get('test.md') as any;
+    expect(file).toBeDefined();
+    expect(file.mtime).toBeTruthy();
+    expect(file.hash).toMatch(/^[a-f0-9]{64}$/);
   });
 });
