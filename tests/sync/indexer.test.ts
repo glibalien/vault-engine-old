@@ -147,4 +147,19 @@ describe('indexFile', () => {
     expect(file.mtime).toBe('2025-03-10T00:00:00.000Z');
     expect(file.hash).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  it('is idempotent — re-indexing replaces old data cleanly', () => {
+    const { parsed, raw } = loadAndParse('sample-task.md', 'tasks/review.md');
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-11T00:00:00.000Z', raw);
+
+    const nodes = db.prepare('SELECT * FROM nodes WHERE id = ?').all('tasks/review.md');
+    expect(nodes).toHaveLength(1);
+
+    const types = db.prepare('SELECT * FROM node_types WHERE node_id = ?').all('tasks/review.md');
+    expect(types).toHaveLength(1); // task
+
+    const file = db.prepare('SELECT * FROM files WHERE path = ?').get('tasks/review.md') as any;
+    expect(file.mtime).toBe('2025-03-11T00:00:00.000Z');
+  });
 });
