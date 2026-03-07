@@ -44,3 +44,23 @@ export interface ResolvedSchema {
   };
   computed?: Record<string, { query: string }>;
 }
+
+export interface MergedField {
+  type: SchemaFieldType;
+  required?: boolean;
+  default?: unknown;
+  values?: string[];
+  target_schema?: string;
+  sources: string[];
+}
+
+export interface MergeConflict {
+  field: string;
+  definitions: Array<{ schema: string; type: SchemaFieldType }>;
+  message: string;
+}
+
+export interface MergeResult {
+  fields: Record<string, MergedField>;
+  conflicts: MergeConflict[];
+}
