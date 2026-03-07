@@ -66,4 +66,67 @@ describe('MCP server', () => {
       expect(byName.get('person')).toBe(1);
     });
   });
+
+  describe('get-node', () => {
+    it('returns node with types and fields', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'tasks/review.md' },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.id).toBe('tasks/review.md');
+      expect(data.file_path).toBe('tasks/review.md');
+      expect(data.node_type).toBe('file');
+      expect(data.types).toContain('task');
+      expect(data.fields.status).toBe('todo');
+      expect(data.fields.priority).toBe('high');
+      expect(data.content_text).toContain('vendor');
+      expect(data.content_md).toContain('vendor');
+      expect(data.updated_at).toBeDefined();
+    });
+
+    it('returns error for nonexistent node', async () => {
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'nonexistent.md' },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain('Node not found');
+    });
+
+    it('includes relationships when requested', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'tasks/review.md', include_relationships: true },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.relationships).toBeDefined();
+      expect(data.relationships.length).toBeGreaterThan(0);
+      // Should include outgoing wiki-links
+      const targets = data.relationships.map((r: { target_id: string }) => r.target_id);
+      expect(targets).toContain('Bob Jones');
+      expect(targets).toContain('Q1 Planning Meeting');
+    });
+
+    it('omits relationships by default', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'tasks/review.md' },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.relationships).toBeUndefined();
+    });
+  });
 });
