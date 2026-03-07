@@ -12,6 +12,7 @@ export function createSchema(db: Database.Database): void {
       depth           INTEGER DEFAULT 0,
       content_text    TEXT,
       content_md      TEXT,
+      title           TEXT,
       created_at      TEXT DEFAULT (datetime('now')),
       updated_at      TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (parent_id) REFERENCES nodes(id)
@@ -47,6 +48,7 @@ export function createSchema(db: Database.Database): void {
       target_id       TEXT NOT NULL,
       rel_type        TEXT NOT NULL,
       context         TEXT,
+      resolved_target_id TEXT,
       created_at      TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (source_id) REFERENCES nodes(id) ON DELETE CASCADE
     );
@@ -75,6 +77,7 @@ export function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_rel_source ON relationships(source_id);
     CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
     CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(rel_type);
+    CREATE INDEX IF NOT EXISTS idx_rel_resolved ON relationships(resolved_target_id);
 
     -- FTS5 sync triggers
     CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN
