@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { extractWikiLinksFromString, extractWikiLinksFromMdast, stripWikiLinks } from '../../src/parser/wiki-links.js';
+import { extractWikiLinksFromString, extractWikiLinksFromMdast } from '../../src/parser/wiki-links.js';
+import type { Root } from 'mdast';
 
 describe('extractWikiLinksFromString', () => {
   it('extracts a simple wiki-link', () => {
@@ -34,26 +35,27 @@ describe('extractWikiLinksFromString', () => {
 });
 
 describe('extractWikiLinksFromMdast', () => {
-  it('extracts wiki-links from text nodes with context', () => {
-    const mdast = {
-      type: 'root' as const,
+  it('extracts wiki-links from wikiLink nodes with context', () => {
+    const mdast: Root = {
+      type: 'root',
       children: [
         {
-          type: 'paragraph' as const,
+          type: 'paragraph',
           children: [
+            { type: 'text', value: 'Read proposal from ' },
             {
-              type: 'text' as const,
-              value: 'Read proposal from [[Acme Corp]]',
+              type: 'wikiLink',
+              target: 'Acme Corp',
               position: {
-                start: { line: 5, column: 1, offset: 40 },
+                start: { line: 5, column: 20, offset: 59 },
                 end: { line: 5, column: 33, offset: 72 },
               },
-            },
+            } as any,
           ],
         },
       ],
     };
-    const result = extractWikiLinksFromMdast(mdast as any);
+    const result = extractWikiLinksFromMdast(mdast);
     expect(result).toHaveLength(1);
     expect(result[0].target).toBe('Acme Corp');
     expect(result[0].source).toBe('body');
@@ -61,58 +63,50 @@ describe('extractWikiLinksFromMdast', () => {
     expect(result[0].position).toBeDefined();
   });
 
-  it('extracts multiple wiki-links from multiple nodes', () => {
-    const mdast = {
-      type: 'root' as const,
+  it('extracts multiple wiki-links from multiple paragraphs', () => {
+    const mdast: Root = {
+      type: 'root',
       children: [
         {
-          type: 'paragraph' as const,
+          type: 'paragraph',
           children: [
-            { type: 'text' as const, value: '[[Alice]] and [[Bob]]' },
+            { type: 'wikiLink', target: 'Alice' } as any,
+            { type: 'text', value: ' and ' },
+            { type: 'wikiLink', target: 'Bob' } as any,
           ],
         },
         {
-          type: 'paragraph' as const,
+          type: 'paragraph',
           children: [
-            { type: 'text' as const, value: 'See [[Charlie]]' },
+            { type: 'text', value: 'See ' },
+            { type: 'wikiLink', target: 'Charlie' } as any,
           ],
         },
       ],
     };
-    const result = extractWikiLinksFromMdast(mdast as any);
+    const result = extractWikiLinksFromMdast(mdast);
     expect(result).toHaveLength(3);
     expect(result.map(l => l.target)).toEqual(['Alice', 'Bob', 'Charlie']);
   });
 
-  it('skips yaml frontmatter nodes', () => {
-    const mdast = {
-      type: 'root' as const,
+  it('builds context from sibling nodes in parent', () => {
+    const mdast: Root = {
+      type: 'root',
       children: [
-        { type: 'yaml' as const, value: 'title: "[[Not A Link]]"' },
         {
-          type: 'paragraph' as const,
+          type: 'paragraph',
           children: [
-            { type: 'text' as const, value: '[[Real Link]]' },
+            { type: 'text', value: 'Talk to ' },
+            { type: 'wikiLink', target: 'Alice', alias: 'A' } as any,
+            { type: 'text', value: ' and ' },
+            { type: 'wikiLink', target: 'Bob' } as any,
+            { type: 'text', value: ' today.' },
           ],
         },
       ],
     };
-    const result = extractWikiLinksFromMdast(mdast as any);
-    expect(result).toHaveLength(1);
-    expect(result[0].target).toBe('Real Link');
-  });
-});
-
-describe('stripWikiLinks', () => {
-  it('replaces [[target]] with target', () => {
-    expect(stripWikiLinks('See [[Bob Jones]]')).toBe('See Bob Jones');
-  });
-
-  it('replaces [[target|alias]] with target', () => {
-    expect(stripWikiLinks('See [[Bob Jones|Bob]]')).toBe('See Bob Jones');
-  });
-
-  it('handles multiple links', () => {
-    expect(stripWikiLinks('[[Alice]] and [[Bob]]')).toBe('Alice and Bob');
+    const result = extractWikiLinksFromMdast(mdast);
+    expect(result[0].context).toBe('Talk to A and Bob today.');
+    expect(result[1].context).toBe('Talk to A and Bob today.');
   });
 });

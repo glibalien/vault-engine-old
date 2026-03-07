@@ -10,8 +10,8 @@ export interface RawWikiLink {
 
 export function extractWikiLinksFromString(text: string): RawWikiLink[] {
   const links: RawWikiLink[] = [];
-  let match: RegExpExecArray | null;
   const re = new RegExp(WIKI_LINK_RE.source, WIKI_LINK_RE.flags);
+  let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
     links.push({
       target: match[1].trim(),
@@ -23,33 +23,35 @@ export function extractWikiLinksFromString(text: string): RawWikiLink[] {
 
 export function extractWikiLinksFromMdast(mdast: Root): WikiLink[] {
   const links: WikiLink[] = [];
-  visit(mdast, links);
+  visitForLinks(mdast, links, undefined);
   return links;
 }
 
-function visit(node: any, links: WikiLink[]): void {
-  if (node.type === 'yaml') return;
-
-  if (node.type === 'text' && typeof node.value === 'string') {
-    const raw = extractWikiLinksFromString(node.value);
-    for (const link of raw) {
-      links.push({
-        target: link.target,
-        alias: link.alias,
-        source: 'body',
-        context: stripWikiLinks(node.value),
-        position: node.position,
-      });
-    }
+function visitForLinks(node: any, links: WikiLink[], parent: any | undefined): void {
+  if (node.type === 'wikiLink') {
+    links.push({
+      target: node.target,
+      alias: node.alias,
+      source: 'body',
+      context: parent ? buildContext(parent) : undefined,
+      position: node.position,
+    });
   }
 
   if (node.children && Array.isArray(node.children)) {
     for (const child of node.children) {
-      visit(child, links);
+      visitForLinks(child, links, node);
     }
   }
 }
 
-export function stripWikiLinks(text: string): string {
-  return text.replace(WIKI_LINK_RE, (_: string, target: string) => target);
+function buildContext(parent: any): string {
+  if (!parent.children || !Array.isArray(parent.children)) return '';
+  return parent.children
+    .map((child: any) => {
+      if (child.type === 'text') return child.value;
+      if (child.type === 'wikiLink') return child.alias ?? child.target;
+      return '';
+    })
+    .join('');
 }
