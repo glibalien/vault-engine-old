@@ -157,4 +157,63 @@ fields:
       default: 'draft',
     });
   });
+
+  it('detects inheritance cycle', () => {
+    writeFileSync(join(tmpDir, '.schemas', 'a.yaml'), `
+name: a
+extends: b
+fields:
+  x:
+    type: string
+`);
+    writeFileSync(join(tmpDir, '.schemas', 'b.yaml'), `
+name: b
+extends: a
+fields:
+  y:
+    type: string
+`);
+
+    expect(() => loadSchemas(db, tmpDir)).toThrow(/inheritance cycle/i);
+  });
+
+  it('errors on dangling extends reference', () => {
+    writeFileSync(join(tmpDir, '.schemas', 'orphan.yaml'), `
+name: orphan
+extends: nonexistent
+fields:
+  x:
+    type: string
+`);
+
+    expect(() => loadSchemas(db, tmpDir)).toThrow(/extends unknown schema 'nonexistent'/);
+  });
+
+  it('errors on missing name field', () => {
+    writeFileSync(join(tmpDir, '.schemas', 'bad.yaml'), `
+display_name: Bad Schema
+fields:
+  x:
+    type: string
+`);
+
+    expect(() => loadSchemas(db, tmpDir)).toThrow(/missing required 'name' field/);
+  });
+
+  it('errors on duplicate schema names', () => {
+    writeFileSync(join(tmpDir, '.schemas', 'first.yaml'), `
+name: thing
+fields:
+  x:
+    type: string
+`);
+    writeFileSync(join(tmpDir, '.schemas', 'second.yaml'), `
+name: thing
+fields:
+  y:
+    type: number
+`);
+
+    expect(() => loadSchemas(db, tmpDir)).toThrow(/Duplicate schema name 'thing'/);
+  });
 });
