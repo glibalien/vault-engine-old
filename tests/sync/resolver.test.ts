@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
 import { indexFile } from '../../src/sync/indexer.js';
+import { resolveTarget } from '../../src/sync/resolver.js';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
@@ -74,5 +75,79 @@ describe('title population in indexFile', () => {
 
     const node = db.prepare('SELECT title FROM nodes WHERE id = ?').get('deep/nested/path/Cool File.md') as any;
     expect(node.title).toBe('Cool File');
+  });
+});
+
+describe('resolveTarget', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function seed(path: string, raw: string) {
+    const parsed = parseFile(path, raw);
+    indexFile(db, parsed, path, '2025-03-10T00:00:00.000Z', raw);
+  }
+
+  it('resolves by frontmatter title (case-insensitive)', () => {
+    seed('people/alice-smith.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+
+    expect(resolveTarget(db, 'Alice Smith')).toBe('people/alice-smith.md');
+    expect(resolveTarget(db, 'alice smith')).toBe('people/alice-smith.md');
+    expect(resolveTarget(db, 'ALICE SMITH')).toBe('people/alice-smith.md');
+  });
+
+  it('resolves by filename stem when no title match', () => {
+    seed('notes/Meeting Notes.md', '# Meeting\nContent.');
+
+    expect(resolveTarget(db, 'Meeting Notes')).toBe('notes/Meeting Notes.md');
+    expect(resolveTarget(db, 'meeting notes')).toBe('notes/Meeting Notes.md');
+  });
+
+  it('returns null for unresolvable targets', () => {
+    seed('notes/hello.md', '# Hello');
+
+    expect(resolveTarget(db, 'Nonexistent Node')).toBeNull();
+  });
+
+  it('prefers title match over filename stem match', () => {
+    seed('docs/readme.md', '---\ntitle: Getting Started Guide\n---\nContent.');
+
+    expect(resolveTarget(db, 'Getting Started Guide')).toBe('docs/readme.md');
+    expect(resolveTarget(db, 'readme')).toBe('docs/readme.md');
+  });
+
+  it('resolves with path suffix for disambiguation', () => {
+    seed('work/Meeting Notes.md', '---\ntitle: Meeting Notes\n---\nWork meetings.');
+    seed('personal/Meeting Notes.md', '---\ntitle: Meeting Notes\n---\nPersonal meetings.');
+
+    // Ambiguous — two nodes with same title
+    expect(resolveTarget(db, 'Meeting Notes')).toBeNull();
+
+    // Disambiguated with path prefix
+    expect(resolveTarget(db, 'work/Meeting Notes')).toBe('work/Meeting Notes.md');
+    expect(resolveTarget(db, 'personal/Meeting Notes')).toBe('personal/Meeting Notes.md');
+  });
+
+  it('handles path suffix matching case-insensitively', () => {
+    seed('Projects/Alpha/Status.md', '---\ntitle: Status\n---\nStatus update.');
+    seed('Projects/Beta/Status.md', '---\ntitle: Status\n---\nStatus update.');
+
+    expect(resolveTarget(db, 'Alpha/Status')).toBe('Projects/Alpha/Status.md');
+    expect(resolveTarget(db, 'alpha/status')).toBe('Projects/Alpha/Status.md');
+  });
+
+  it('returns null when path suffix is still ambiguous', () => {
+    seed('a/shared/Note.md', '---\ntitle: Note\n---\nA.');
+    seed('b/shared/Note.md', '---\ntitle: Note\n---\nB.');
+
+    expect(resolveTarget(db, 'shared/Note')).toBeNull();
   });
 });
