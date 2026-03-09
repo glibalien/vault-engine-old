@@ -180,4 +180,38 @@ describe('validateNode', () => {
       expect(result.warnings.filter(w => w.rule === 'invalid_reference')).toHaveLength(0);
     });
   });
+
+  describe('multiple warnings', () => {
+    it('accumulates warnings from different rules', () => {
+      const parsed = makeParsed([
+        { key: 'priority', value: 'invalid-enum', valueType: 'string' },
+        { key: 'assignee', value: 'not-a-link', valueType: 'string' },
+      ]);
+      const merge = makeMerge({
+        status: { type: 'enum', required: true, values: ['todo', 'done'] },
+        priority: { type: 'enum', values: ['high', 'low'] },
+        assignee: { type: 'reference' },
+      });
+
+      const result = validateNode(parsed, merge);
+
+      expect(result.valid).toBe(false);
+      // required (status missing) + type_mismatch (assignee: string vs reference) + invalid_enum (priority) + invalid_reference (assignee)
+      const rules = result.warnings.map(w => w.rule).sort();
+      expect(rules).toContain('required');
+      expect(rules).toContain('invalid_enum');
+      expect(rules).toContain('invalid_reference');
+      expect(result.warnings.length).toBeGreaterThanOrEqual(3);
+    });
+
+    it('returns valid with empty merge result', () => {
+      const parsed = makeParsed([{ key: 'anything', value: 'whatever', valueType: 'string' }]);
+      const merge: MergeResult = { fields: {}, conflicts: [] };
+
+      const result = validateNode(parsed, merge);
+
+      expect(result.valid).toBe(true);
+      expect(result.warnings).toHaveLength(0);
+    });
+  });
 });
