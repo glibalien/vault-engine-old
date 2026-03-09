@@ -466,6 +466,57 @@ describe('MCP server', () => {
 
       expect(result.isError).toBe(true);
     });
+
+    it('validates hypothetical data with types and fields', async () => {
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      loadSchemas(db, resolve(import.meta.dirname, '../fixtures'));
+
+      const result = await client.callTool({
+        name: 'validate-node',
+        arguments: {
+          types: ['task'],
+          fields: { status: 'todo', priority: 'high' },
+        },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.valid).toBe(true);
+      expect(data.warnings).toEqual([]);
+    });
+
+    it('returns warnings for hypothetical data with invalid fields', async () => {
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      loadSchemas(db, resolve(import.meta.dirname, '../fixtures'));
+
+      const result = await client.callTool({
+        name: 'validate-node',
+        arguments: {
+          types: ['task'],
+          fields: { priority: 'extreme' },
+        },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.valid).toBe(false);
+      const rules = data.warnings.map((w: any) => w.rule);
+      expect(rules).toContain('required');     // missing status
+      expect(rules).toContain('invalid_enum'); // extreme not valid
+    });
+
+    it('validates hypothetical data with types only (no fields)', async () => {
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      loadSchemas(db, resolve(import.meta.dirname, '../fixtures'));
+
+      const result = await client.callTool({
+        name: 'validate-node',
+        arguments: { types: ['task'] },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      // task schema has required: status, so should warn
+      expect(data.valid).toBe(false);
+      expect(data.warnings.some((w: any) => w.rule === 'required' && w.field === 'status')).toBe(true);
+    });
   });
 
   describe('list-schemas', () => {
