@@ -57,7 +57,13 @@ describe('loadSchemas', () => {
 
     const meeting = getSchema(db, 'meeting');
     expect(meeting!.computed).toBeDefined();
-    expect(meeting!.computed!.action_count.query).toContain('COUNT');
+    expect(meeting!.computed!.action_count).toEqual({
+      aggregate: 'count',
+      filter: {
+        types_includes: 'task',
+        references_this: 'source',
+      },
+    });
   });
 });
 

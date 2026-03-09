@@ -1,6 +1,10 @@
 export type {
   SchemaFieldType,
   FieldDefinition,
+  ComputedFilter,
+  ComputedDefinition,
+  CountDefinition,
+  PercentageDefinition,
   SchemaDefinition,
   ResolvedSchema,
   MergedField,
