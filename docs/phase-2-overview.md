@@ -138,12 +138,12 @@ Plus additions to existing files:
 
 ## Phase 2 Checklist
 
-- [ ] Schema TypeScript types (`SchemaDefinition`, `FieldDefinition`, `ResolvedSchema`)
-- [ ] YAML schema loader with `extends` inheritance resolution
-- [ ] Schema storage in `schemas` DB table
-- [ ] Multi-type field merging (union fields from all types on a node)
-- [ ] Schema validation on index (warn, don't reject)
-- [ ] Reference resolution (wiki-link title → node ID lookup)
+- [x] Schema TypeScript types (`SchemaDefinition`, `FieldDefinition`, `ResolvedSchema`)
+- [x] YAML schema loader with `extends` inheritance resolution
+- [x] Schema storage in `schemas` DB table
+- [x] Multi-type field merging (union fields from all types on a node)
+- [x] Schema validation on index (warn, don't reject)
+- [x] Reference resolution (wiki-link title → node ID lookup)
 - [ ] MCP tool: `list-schemas`
 - [ ] MCP tool: `describe-schema`
 - [ ] MCP tool: `validate-node`
