@@ -2,6 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { getAllSchemas } from '../schema/loader.js';
 
 export function createServer(db: Database.Database): McpServer {
   const server = new McpServer({ name: 'vault-engine', version: '0.1.0' });
@@ -257,6 +258,24 @@ export function createServer(db: Database.Database): McpServer {
           isError: true,
         };
       }
+    },
+  );
+
+  server.tool(
+    'list-schemas',
+    'List all schema definitions loaded from YAML. Shows what structure is defined, as opposed to list-types which shows what types nodes actually have.',
+    {},
+    async () => {
+      const schemas = getAllSchemas(db);
+      const summaries = schemas.map(s => ({
+        name: s.name,
+        display_name: s.display_name ?? null,
+        icon: s.icon ?? null,
+        extends: s.extends ?? null,
+        ancestors: s.ancestors,
+        field_count: Object.keys(s.fields).length,
+      }));
+      return { content: [{ type: 'text', text: JSON.stringify(summaries) }] };
     },
   );
 

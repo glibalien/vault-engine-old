@@ -345,4 +345,35 @@ describe('MCP server', () => {
       expect(result.isError).toBe(true);
     });
   });
+
+  describe('list-schemas', () => {
+    it('returns empty array when no schemas are loaded', async () => {
+      const result = await client.callTool({ name: 'list-schemas', arguments: {} });
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data).toEqual([]);
+    });
+
+    it('returns schema summaries with field counts', async () => {
+      // Load schemas from fixtures
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      loadSchemas(db, resolve(import.meta.dirname, '../fixtures'));
+
+      const result = await client.callTool({ name: 'list-schemas', arguments: {} });
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+
+      // Fixtures have: task, work-task, person, meeting
+      expect(data).toHaveLength(4);
+      const task = data.find((s: any) => s.name === 'task');
+      expect(task).toBeDefined();
+      expect(task.display_name).toBe('Task');
+      expect(task.field_count).toBe(4); // status, assignee, due_date, priority
+      expect(task.extends).toBeNull();
+      expect(task.ancestors).toEqual([]);
+
+      const workTask = data.find((s: any) => s.name === 'work-task');
+      expect(workTask.extends).toBe('task');
+      expect(workTask.ancestors).toEqual(['task']);
+      expect(workTask.field_count).toBe(7); // 4 inherited + project, department, billable
+    });
+  });
 });
