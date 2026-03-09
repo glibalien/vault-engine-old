@@ -77,6 +77,7 @@ export function createServer(db: Database.Database): McpServer {
       const valueType = r.value_type as FieldValueType;
       if (valueType === 'number' && r.value_number !== null) value = r.value_number;
       else if (valueType === 'date' && r.value_date) value = new Date(r.value_date);
+      else if (valueType === 'boolean') value = r.value_text === 'true';
       else if (valueType === 'list' && r.value_text) {
         try { value = JSON.parse(r.value_text); } catch { /* keep as string */ }
       }
@@ -344,7 +345,7 @@ export function createServer(db: Database.Database): McpServer {
         .describe('Validate an existing node by its ID (vault-relative path)'),
       types: z.array(z.string()).optional()
         .describe('Schema types for hypothetical validation, e.g. ["task", "meeting"]'),
-      fields: z.record(z.unknown()).optional()
+      fields: z.record(z.string(), z.unknown()).optional()
         .describe('Field values for hypothetical validation, e.g. { "status": "todo" }'),
     },
     async ({ node_id, types, fields: hypotheticalFields }) => {
@@ -378,9 +379,8 @@ export function createServer(db: Database.Database): McpServer {
       }
 
       // If no types have schemas, nothing to validate
-      const hasKnownSchema = nodeTypes.some(t =>
-        db.prepare('SELECT 1 FROM schemas WHERE name = ?').get(t) !== undefined
-      );
+      const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+      const hasKnownSchema = nodeTypes.some(t => schemaCheck.get(t) !== undefined);
       if (!hasKnownSchema) {
         return {
           content: [{ type: 'text', text: JSON.stringify({ valid: true, warnings: [] }) }],
