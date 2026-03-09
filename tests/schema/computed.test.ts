@@ -116,6 +116,49 @@ describe('evaluateComputed', () => {
       const results = evaluateComputed(db, 'meetings/q1.md', defs);
       expect(results.done_count).toEqual({ value: 0 });
     });
+
+    it('counts with types_includes only (no references_this)', () => {
+      db.transaction(() => {
+        indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+        indexFixture(db, 'sample-task.md', 'tasks/review.md');
+        resolveReferences(db);
+      })();
+
+      // sample-meeting.md has types: [meeting, task], sample-task.md has types: [task]
+      // So there are 2 nodes with type 'task'
+      const defs: Record<string, ComputedDefinition> = {
+        all_tasks: {
+          aggregate: 'count',
+          filter: {
+            types_includes: 'task',
+          },
+        },
+      };
+
+      const results = evaluateComputed(db, 'meetings/q1.md', defs);
+      expect(results.all_tasks).toEqual({ value: 2 });
+    });
+
+    it('counts with references_this only (no types_includes)', () => {
+      db.transaction(() => {
+        indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+        indexFixture(db, 'sample-task.md', 'tasks/review.md');
+        resolveReferences(db);
+      })();
+
+      // sample-task.md has source: "[[Q1 Planning Meeting]]" → references_this: source
+      const defs: Record<string, ComputedDefinition> = {
+        referencing_nodes: {
+          aggregate: 'count',
+          filter: {
+            references_this: 'source',
+          },
+        },
+      };
+
+      const results = evaluateComputed(db, 'meetings/q1.md', defs);
+      expect(results.referencing_nodes).toEqual({ value: 1 });
+    });
   });
 
   describe('percentage aggregate', () => {
@@ -195,5 +238,35 @@ describe('evaluateComputed', () => {
         denominator: 1,
       });
     });
+  });
+
+  it('evaluates multiple computed definitions in one call', () => {
+    db.transaction(() => {
+      indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+      resolveReferences(db);
+    })();
+
+    const defs: Record<string, ComputedDefinition> = {
+      task_count: {
+        aggregate: 'count',
+        filter: {
+          types_includes: 'task',
+          references_this: 'source',
+        },
+      },
+      completion_pct: {
+        aggregate: 'percentage',
+        numerator: { status: 'done' },
+        filter: {
+          types_includes: 'task',
+          references_this: 'source',
+        },
+      },
+    };
+
+    const results = evaluateComputed(db, 'meetings/q1.md', defs);
+    expect(results.task_count).toEqual({ value: 1 });
+    expect(results.completion_pct).toEqual({ value: 0, numerator: 0, denominator: 1 });
   });
 });

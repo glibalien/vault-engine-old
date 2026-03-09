@@ -72,7 +72,7 @@ export function evaluateComputed(
       const numRow = db.prepare(numQ.sql).get(...numQ.params) as { cnt: number };
       const numerator = numRow.cnt;
 
-      const value = denominator === 0 ? 0 : (numerator / denominator) * 100;
+      const value = denominator === 0 ? 0 : Math.round((numerator / denominator) * 10000) / 100;
       results[name] = { value, numerator, denominator };
     }
   }
