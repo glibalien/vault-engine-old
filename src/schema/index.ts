@@ -17,3 +17,5 @@ export type {
 export { loadSchemas, getSchema, getAllSchemas } from './loader.js';
 export { mergeSchemaFields } from './merger.js';
 export { validateNode } from './validator.js';
+export { evaluateComputed } from './computed.js';
+export type { ComputedResult } from './computed.js';
