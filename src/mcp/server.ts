@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { getAllSchemas, getSchema } from '../schema/loader.js';
 import { mergeSchemaFields } from '../schema/merger.js';
 import { validateNode } from '../schema/validator.js';
+import { evaluateComputed } from '../schema/computed.js';
+import type { ComputedDefinition } from '../schema/types.js';
 import type { FieldEntry, FieldValueType } from '../parser/types.js';
 
 export function createServer(db: Database.Database): McpServer {
@@ -119,8 +121,10 @@ export function createServer(db: Database.Database): McpServer {
       node_id: z.string().describe('Vault-relative file path, e.g. "tasks/review.md"'),
       include_relationships: z.boolean().optional().default(false)
         .describe('Include incoming and outgoing relationships'),
+      include_computed: z.boolean().optional().default(false)
+        .describe('Include computed field values from schema definitions'),
     },
-    async ({ node_id, include_relationships }) => {
+    async ({ node_id, include_relationships, include_computed }) => {
       const row = db.prepare(`
         SELECT id, file_path, node_type, content_text, content_md, updated_at
         FROM nodes WHERE id = ?
@@ -143,6 +147,21 @@ export function createServer(db: Database.Database): McpServer {
         `).all(node_id, node_id) as Array<{ source_id: string; target_id: string; rel_type: string; context: string | null }>;
 
         (node as Record<string, unknown>).relationships = rels;
+      }
+
+      if (include_computed) {
+        const nodeTypes = (node as Record<string, unknown>).types as string[];
+        const allComputedDefs: Record<string, ComputedDefinition> = {};
+        for (const typeName of nodeTypes) {
+          const schema = getSchema(db, typeName);
+          if (schema?.computed) {
+            Object.assign(allComputedDefs, schema.computed);
+          }
+        }
+        const computed = Object.keys(allComputedDefs).length > 0
+          ? evaluateComputed(db, node_id, allComputedDefs)
+          : {};
+        (node as Record<string, unknown>).computed = computed;
       }
 
       return { content: [{ type: 'text', text: JSON.stringify(node) }] };

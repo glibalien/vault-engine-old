@@ -128,6 +128,56 @@ describe('MCP server', () => {
       const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
       expect(data.relationships).toBeUndefined();
     });
+
+    it('includes computed fields when include_computed is true', async () => {
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      const { resolveReferences } = await import('../../src/sync/resolver.js');
+
+      loadSchemas(db, fixturesDir);
+
+      db.transaction(() => {
+        indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+        indexFixture(db, 'sample-task.md', 'tasks/review.md');
+        resolveReferences(db);
+      })();
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'meetings/q1.md', include_computed: true },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.computed).toBeDefined();
+      expect(data.computed.action_count).toEqual({ value: 1 });
+    });
+
+    it('does not include computed fields by default', async () => {
+      indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'meetings/q1.md' },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.computed).toBeUndefined();
+    });
+
+    it('returns empty computed when node has no schemas with computed defs', async () => {
+      const { loadSchemas } = await import('../../src/schema/loader.js');
+      loadSchemas(db, fixturesDir);
+
+      indexFixture(db, 'sample-person.md', 'people/alice.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'people/alice.md', include_computed: true },
+      });
+
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.computed).toEqual({});
+    });
   });
 
   describe('get-recent', () => {
