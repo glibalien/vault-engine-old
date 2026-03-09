@@ -113,4 +113,29 @@ describe('validateNode', () => {
       expect(result.valid).toBe(true);
     });
   });
+
+  describe('enum validation', () => {
+    it('warns when enum value is not in allowed values', () => {
+      const parsed = makeParsed([{ key: 'status', value: 'invalid', valueType: 'string' }]);
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const result = validateNode(parsed, merge);
+      expect(result.valid).toBe(false);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toMatchObject({ field: 'status', rule: 'invalid_enum' });
+    });
+
+    it('passes when enum value is in allowed values', () => {
+      const parsed = makeParsed([{ key: 'status', value: 'todo', valueType: 'string' }]);
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const result = validateNode(parsed, merge);
+      expect(result.valid).toBe(true);
+    });
+
+    it('skips enum check when schema has no values array', () => {
+      const parsed = makeParsed([{ key: 'status', value: 'anything', valueType: 'string' }]);
+      const merge = makeMerge({ status: { type: 'enum' } });
+      const result = validateNode(parsed, merge);
+      expect(result.warnings.filter(w => w.rule === 'invalid_enum')).toHaveLength(0);
+    });
+  });
 });

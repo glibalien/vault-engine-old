@@ -43,5 +43,21 @@ export function validateNode(parsed: ParsedFile, mergeResult: MergeResult): Vali
     }
   }
 
+  // Check enum values
+  for (const [name, schemaDef] of Object.entries(mergeResult.fields)) {
+    if (schemaDef.type !== 'enum' || !schemaDef.values) continue;
+    const parsedField = fieldsByKey.get(name);
+    if (!parsedField) continue;
+    if (parsedField.valueType !== 'string') continue;
+
+    if (!schemaDef.values.includes(String(parsedField.value))) {
+      warnings.push({
+        field: name,
+        rule: 'invalid_enum',
+        message: `Field '${name}' has value '${parsedField.value}' which is not in [${schemaDef.values.join(', ')}]`,
+      });
+    }
+  }
+
   return { valid: warnings.length === 0, warnings };
 }
