@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { parseFile } from '../parser/index.js';
 import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, deleteNodeFile, sanitizeSegment } from '../serializer/index.js';
 import { indexFile, deleteFile } from '../sync/indexer.js';
-import { updateBodyReferences, updateFrontmatterReferences } from './rename-helpers.js';
+import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 
 export function createServer(db: Database.Database, vaultPath: string): McpServer {
@@ -512,6 +512,139 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     async (params) => {
       try {
         return addRelationship(params);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  function removeRelationship(params: {
+    source_id: string;
+    target: string;
+    rel_type: string;
+  }) {
+    const { source_id, target: rawTarget, rel_type } = params;
+
+    // Normalize: extract inner target from [[target]] or [[target|alias]]
+    const innerTarget = rawTarget.startsWith('[[')
+      ? (rawTarget.match(/^\[\[([^\]|]+)/)?.[1] ?? rawTarget)
+      : rawTarget;
+
+    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
+    if (!nodeRow) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: Node not found: ${source_id}` }],
+        isError: true,
+      };
+    }
+
+    const absPath = join(vaultPath, source_id);
+    if (!existsSync(absPath)) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Error: File not found on disk: ${source_id}. Database and filesystem are out of sync.`,
+        }],
+        isError: true,
+      };
+    }
+
+    const raw = readFileSync(absPath, 'utf-8');
+    const parsed = parseFile(source_id, raw);
+    const types = parsed.types;
+
+    // Force body if rel_type is 'wiki-link'
+    if (rel_type === 'wiki-link') {
+      const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
+      if (!bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
+        return returnCurrentNode(source_id);
+      }
+      const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
+      return updateNode({ node_id: source_id, body: newBody });
+    }
+
+    // Check schemas
+    const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+    const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
+
+    if (hasSchemas) {
+      const mergeResult = mergeSchemaFields(db, types);
+      const mergedField = mergeResult.fields[rel_type];
+
+      if (mergedField) {
+        const isListType = mergedField.type.startsWith('list<');
+        if (isListType) {
+          const existing = parsed.frontmatter[rel_type];
+          if (!Array.isArray(existing)) return returnCurrentNode(source_id);
+          const filtered = existing.filter((item: unknown) => {
+            if (typeof item !== 'string') return true;
+            const inner = item.match(/^\[\[([^\]|]+)/)?.[1];
+            return inner == null || inner.toLowerCase() !== innerTarget.toLowerCase();
+          });
+          if (filtered.length === existing.length) return returnCurrentNode(source_id);
+          return updateNode({
+            node_id: source_id,
+            fields: { [rel_type]: filtered },
+          });
+        } else {
+          // Scalar: remove if matches
+          const existing = parsed.frontmatter[rel_type];
+          if (typeof existing !== 'string') return returnCurrentNode(source_id);
+          const inner = existing.match(/^\[\[([^\]|]+)/)?.[1];
+          if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
+            return returnCurrentNode(source_id);
+          }
+          return updateNode({ node_id: source_id, fields: { [rel_type]: null } });
+        }
+      }
+    }
+
+    // Schema-less fallback: check existing frontmatter
+    if (!hasSchemas && rel_type !== 'title' && rel_type !== 'types') {
+      const existing = parsed.frontmatter[rel_type];
+      if (Array.isArray(existing)) {
+        const filtered = existing.filter((item: unknown) => {
+          if (typeof item !== 'string') return true;
+          const inner = item.match(/^\[\[([^\]|]+)/)?.[1];
+          return inner == null || inner.toLowerCase() !== innerTarget.toLowerCase();
+        });
+        if (filtered.length === existing.length) return returnCurrentNode(source_id);
+        return updateNode({
+          node_id: source_id,
+          fields: { [rel_type]: filtered },
+        });
+      } else if (typeof existing === 'string' && rel_type in parsed.frontmatter) {
+        const inner = existing.match(/^\[\[([^\]|]+)/)?.[1];
+        if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
+          return returnCurrentNode(source_id);
+        }
+        return updateNode({ node_id: source_id, fields: { [rel_type]: null } });
+      }
+    }
+
+    // Body fallback: remove from body
+    const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
+    if (!bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
+      return returnCurrentNode(source_id);
+    }
+    const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
+    return updateNode({ node_id: source_id, body: newBody });
+  }
+
+  server.tool(
+    'remove-relationship',
+    'Remove a relationship from one node to another. Inverse of add-relationship. Routes to frontmatter field or body based on schema.',
+    {
+      source_id: z.string().describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
+      target: z.string().describe('Wiki-link target to remove, e.g. "Alice" or "[[Alice]]"'),
+      rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
+    },
+    async (params) => {
+      try {
+        return removeRelationship(params);
       } catch (err) {
         return {
           content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
