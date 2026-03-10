@@ -81,4 +81,78 @@ describe('rename-node', () => {
     const parsed = parseResult(result);
     expect(parsed.node.id).toBe('Alice.md');
   });
+
+  it('renames source file — title changes and file moves', async () => {
+    await createTestNode({ title: 'Alice', fields: { status: 'active' } });
+
+    const result = await callRename({ node_id: 'Alice.md', new_title: 'Alice Smith' });
+    expect(result.isError).toBeUndefined();
+    const parsed = parseResult(result);
+
+    // New node at new path
+    expect(parsed.node.id).toBe('Alice Smith.md');
+    expect(parsed.old_path).toBe('Alice.md');
+    expect(parsed.new_path).toBe('Alice Smith.md');
+
+    // New file exists, old file deleted
+    expect(existsSync(join(vaultPath, 'Alice Smith.md'))).toBe(true);
+    expect(existsSync(join(vaultPath, 'Alice.md'))).toBe(false);
+
+    // New file has updated title
+    const content = readFileSync(join(vaultPath, 'Alice Smith.md'), 'utf-8');
+    expect(content).toContain('title: Alice Smith');
+
+    // Fields preserved
+    expect(content).toContain('status: active');
+
+    // DB updated: old node gone, new node exists
+    const oldNode = db.prepare('SELECT id FROM nodes WHERE id = ?').get('Alice.md');
+    expect(oldNode).toBeUndefined();
+    const newNode = db.prepare('SELECT id, title FROM nodes WHERE id = ?').get('Alice Smith.md') as { id: string; title: string };
+    expect(newNode.title).toBe('Alice Smith');
+  });
+
+  it('uses explicit new_path when provided', async () => {
+    await createTestNode({ title: 'Alice' });
+
+    const result = await callRename({
+      node_id: 'Alice.md',
+      new_title: 'Alice Smith',
+      new_path: 'people/alice-smith.md',
+    });
+    expect(result.isError).toBeUndefined();
+    const parsed = parseResult(result);
+
+    expect(parsed.node.id).toBe('people/alice-smith.md');
+    expect(existsSync(join(vaultPath, 'people/alice-smith.md'))).toBe(true);
+    expect(existsSync(join(vaultPath, 'Alice.md'))).toBe(false);
+  });
+
+  it('handles self-references in body', async () => {
+    await createTestNode({
+      title: 'Alice',
+      body: 'This is [[Alice]] talking about herself.',
+    });
+
+    const result = await callRename({ node_id: 'Alice.md', new_title: 'Alice Smith' });
+    expect(result.isError).toBeUndefined();
+
+    const content = readFileSync(join(vaultPath, 'Alice Smith.md'), 'utf-8');
+    expect(content).toContain('[[Alice Smith]]');
+    expect(content).not.toContain('[[Alice]]');
+  });
+
+  it('handles self-references in frontmatter fields', async () => {
+    await createTestNode({
+      title: 'Alice',
+      fields: { see_also: '[[Alice]]' },
+    });
+
+    const result = await callRename({ node_id: 'Alice.md', new_title: 'Alice Smith' });
+    expect(result.isError).toBeUndefined();
+
+    const content = readFileSync(join(vaultPath, 'Alice Smith.md'), 'utf-8');
+    expect(content).toContain('[[Alice Smith]]');
+    expect(content).not.toContain('[[Alice]]');
+  });
 });

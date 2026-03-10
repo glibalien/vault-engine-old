@@ -585,8 +585,110 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
       };
     }
 
-    // TODO: implement rename pipeline (Tasks 4-5)
-    return returnCurrentNode(node_id);
+    // Find referencing files (excluding self)
+    const referencingRows = db.prepare(`
+      SELECT DISTINCT source_id FROM relationships
+      WHERE (resolved_target_id = ? OR LOWER(target_id) = LOWER(?))
+        AND source_id != ?
+    `).all(node_id, oldTitle, node_id) as Array<{ source_id: string }>;
+
+    // Update source file: self-references first (while content has old title), then serialize with new title
+    const updatedSourceFields = updateFrontmatterReferences(existingFields, oldTitle, new_title);
+    const sourceBody = updateBodyReferences(parsed.contentMd, oldTitle, new_title);
+
+    const fieldOrder = computeFieldOrder(types, db);
+    const sourceContent = serializeNode({
+      title: new_title,
+      types,
+      fields: updatedSourceFields,
+      body: sourceBody || undefined,
+      fieldOrder,
+    });
+
+    // Write new file, delete old
+    writeNodeFile(vaultPath, newPath, sourceContent);
+    if (newPath !== node_id) {
+      deleteNodeFile(vaultPath, node_id);
+    }
+
+    // Update referencing files
+    const updatedRefs: Array<{ path: string; content: string }> = [];
+    for (const { source_id } of referencingRows) {
+      const refAbsPath = join(vaultPath, source_id);
+      if (!existsSync(refAbsPath)) continue;
+
+      const refRaw = readFileSync(refAbsPath, 'utf-8');
+      const refParsed = parseFile(source_id, refRaw);
+
+      // Update body references
+      const refBody = updateBodyReferences(refParsed.contentMd, oldTitle, new_title);
+
+      // Update frontmatter references (exclude meta-keys)
+      const refFields: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(refParsed.frontmatter)) {
+        if (key === 'title' || key === 'types') continue;
+        refFields[key] = value;
+      }
+      const refUpdatedFields = updateFrontmatterReferences(refFields, oldTitle, new_title);
+
+      const refTitle = typeof refParsed.frontmatter.title === 'string'
+        ? refParsed.frontmatter.title
+        : source_id.replace(/\.md$/, '').split('/').pop()!;
+
+      const refFieldOrder = computeFieldOrder(refParsed.types, db);
+      const refContent = serializeNode({
+        title: refTitle,
+        types: refParsed.types,
+        fields: refUpdatedFields,
+        body: refBody || undefined,
+        fieldOrder: refFieldOrder,
+      });
+
+      writeNodeFile(vaultPath, source_id, refContent);
+      updatedRefs.push({ path: source_id, content: refContent });
+    }
+
+    // Re-index everything in one transaction
+    db.transaction(() => {
+      if (newPath !== node_id) {
+        deleteFile(db, node_id);
+      }
+
+      const newStat = statSync(join(vaultPath, newPath));
+      const sourceParsed = parseFile(newPath, sourceContent);
+      indexFile(db, sourceParsed, newPath, newStat.mtime.toISOString(), sourceContent);
+
+      for (const { path, content } of updatedRefs) {
+        const refStat = statSync(join(vaultPath, path));
+        const refParsed = parseFile(path, content);
+        indexFile(db, refParsed, path, refStat.mtime.toISOString(), content);
+      }
+
+      resolveReferences(db);
+    })();
+
+    // Return hydrated node
+    const row = db.prepare(`
+      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      FROM nodes WHERE id = ?
+    `).get(newPath) as {
+      id: string; file_path: string; node_type: string;
+      content_text: string; content_md: string | null; updated_at: string;
+    };
+
+    const [node] = hydrateNodes([row]);
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          node,
+          old_path: node_id,
+          new_path: newPath,
+          references_updated: updatedRefs.length,
+        }),
+      }],
+    };
   }
 
   server.tool(
