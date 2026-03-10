@@ -379,7 +379,13 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     `).get(nodeId) as {
       id: string; file_path: string; node_type: string;
       content_text: string; content_md: string | null; updated_at: string;
-    };
+    } | undefined;
+    if (!row) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: Node not found: ${nodeId}` }],
+        isError: true,
+      };
+    }
     const [node] = hydrateNodes([row]);
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings: [] }) }],
