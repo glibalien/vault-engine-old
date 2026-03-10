@@ -28,7 +28,7 @@ describe('MCP server', () => {
     db.pragma('foreign_keys = ON');
     createSchema(db);
 
-    const server = createServer(db);
+    const server = createServer(db, '/tmp/test-vault');
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     client = new Client({ name: 'test-client', version: '0.1.0' });

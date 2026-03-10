@@ -9,7 +9,7 @@ import { evaluateComputed } from '../schema/computed.js';
 import type { ComputedDefinition } from '../schema/types.js';
 import type { FieldEntry, FieldValueType } from '../parser/types.js';
 
-export function createServer(db: Database.Database): McpServer {
+export function createServer(db: Database.Database, vaultPath: string): McpServer {
   const server = new McpServer({ name: 'vault-engine', version: '0.1.0' });
 
   // Shared helper: hydrate node rows with types and fields

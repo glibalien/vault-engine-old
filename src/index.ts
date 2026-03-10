@@ -12,6 +12,6 @@ const db = openDatabase(dbPath);
 createSchema(db);
 loadSchemas(db, vaultPath);
 
-const server = createServer(db);
+const server = createServer(db, vaultPath);
 const transport = new StdioServerTransport();
 await server.connect(transport);
