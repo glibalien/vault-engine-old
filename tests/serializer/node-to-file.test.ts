@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import { serializeNode } from '../../src/serializer/node-to-file.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { resolve } from 'path';
+import Database from 'better-sqlite3';
+import { createSchema } from '../../src/db/schema.js';
+import { loadSchemas } from '../../src/schema/index.js';
+import { serializeNode, computeFieldOrder } from '../../src/serializer/node-to-file.js';
+
+const fixturesDir = resolve(import.meta.dirname, '../fixtures');
 
 describe('serializeNode', () => {
   it('serializes a minimal node with title and types only', () => {
@@ -125,5 +131,56 @@ describe('serializeNode', () => {
       body: 'Some content',
     });
     expect(result.endsWith('\n')).toBe(true);
+  });
+});
+
+describe('computeFieldOrder', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    loadSchemas(db, fixturesDir);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('returns schema frontmatter_fields for single type', () => {
+    const order = computeFieldOrder(['task'], db);
+    expect(order).toEqual(['status', 'assignee', 'due_date', 'priority']);
+  });
+
+  it('returns empty array for unknown type', () => {
+    const order = computeFieldOrder(['unknown'], db);
+    expect(order).toEqual([]);
+  });
+
+  it('returns empty array for type with no serialization config', () => {
+    const order = computeFieldOrder([], db);
+    expect(order).toEqual([]);
+  });
+
+  it('concatenates and deduplicates for multi-type nodes in alphabetical schema order', () => {
+    // meeting: [date, attendees, project, status]
+    // task: [status, assignee, due_date, priority]
+    // alphabetical: meeting first, then task
+    // deduplicated: status already seen from meeting
+    const order = computeFieldOrder(['task', 'meeting'], db);
+    expect(order).toEqual([
+      'date', 'attendees', 'project', 'status',  // from meeting
+      'assignee', 'due_date', 'priority',          // from task (status deduped)
+    ]);
+  });
+
+  it('uses resolved schema (includes inherited fields) for ordering', () => {
+    // work-task extends task, has its own frontmatter_fields
+    const order = computeFieldOrder(['work-task'], db);
+    expect(order).toEqual([
+      'status', 'assignee', 'due_date', 'priority',
+      'project', 'department', 'billable',
+    ]);
   });
 });

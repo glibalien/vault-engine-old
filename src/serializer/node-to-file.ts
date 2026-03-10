@@ -1,3 +1,5 @@
+import type Database from 'better-sqlite3';
+import { getSchema } from '../schema/loader.js';
 import { serializeFrontmatter } from './frontmatter.js';
 
 export interface SerializeNodeOptions {
@@ -49,4 +51,30 @@ export function serializeNode(opts: SerializeNodeOptions): string {
   }
 
   return result;
+}
+
+export function computeFieldOrder(
+  types: string[],
+  db: Database.Database,
+): string[] {
+  if (types.length === 0) return [];
+
+  // Process schemas in alphabetical order for deterministic output
+  const sortedTypes = [...types].sort();
+  const seen = new Set<string>();
+  const order: string[] = [];
+
+  for (const typeName of sortedTypes) {
+    const schema = getSchema(db, typeName);
+    if (!schema?.serialization?.frontmatter_fields) continue;
+
+    for (const field of schema.serialization.frontmatter_fields) {
+      if (!seen.has(field)) {
+        seen.add(field);
+        order.push(field);
+      }
+    }
+  }
+
+  return order;
 }
