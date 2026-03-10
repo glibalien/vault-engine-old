@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { updateBodyReferences, updateFrontmatterReferences } from '../../src/mcp/rename-helpers.js';
+import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from '../../src/mcp/rename-helpers.js';
 
 describe('updateBodyReferences', () => {
   it('replaces a single wiki-link target', () => {
@@ -106,5 +106,71 @@ describe('updateFrontmatterReferences', () => {
 
   it('returns empty object for empty input', () => {
     expect(updateFrontmatterReferences({}, 'Alice', 'Alice Smith')).toEqual({});
+  });
+});
+
+describe('removeBodyWikiLink', () => {
+  it('removes a single wiki-link from body text', () => {
+    const body = 'See [[Alice]] for details.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('See  for details.');
+  });
+
+  it('removes wiki-link with alias', () => {
+    const body = 'Contact [[Alice|the boss]] today.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('Contact  today.');
+  });
+
+  it('matches case-insensitively', () => {
+    const body = 'See [[alice]] here.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('See  here.');
+  });
+
+  it('removes all occurrences of matching link', () => {
+    const body = 'First [[Alice]], then [[Alice]] again.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('First , then  again.');
+  });
+
+  it('does not remove substring matches', () => {
+    const body = 'See [[Alice Cooper]] and [[Alice]].';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('See [[Alice Cooper]] and .');
+  });
+
+  it('returns body unchanged when no matches', () => {
+    const body = 'See [[Bob]] for details.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('See [[Bob]] for details.');
+  });
+
+  it('returns empty string for empty body', () => {
+    expect(removeBodyWikiLink('', 'Alice')).toBe('');
+  });
+
+  it('collapses blank lines left by standalone link removal', () => {
+    const body = 'First paragraph.\n\n[[Alice]]\n\nSecond paragraph.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('First paragraph.\n\nSecond paragraph.');
+  });
+
+  it('handles link as entire body', () => {
+    const body = '[[Alice]]';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('');
+  });
+
+  it('handles link at start of body with trailing content', () => {
+    const body = '[[Alice]]\n\nSome text.';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('Some text.');
+  });
+
+  it('handles link at end of body', () => {
+    const body = 'Some text.\n\n[[Alice]]';
+    const result = removeBodyWikiLink(body, 'Alice');
+    expect(result).toBe('Some text.');
   });
 });
