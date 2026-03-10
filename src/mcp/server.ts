@@ -8,7 +8,7 @@ import { validateNode } from '../schema/validator.js';
 import { evaluateComputed } from '../schema/computed.js';
 import type { ComputedDefinition, ValidationWarning } from '../schema/types.js';
 import type { FieldEntry, FieldValueType } from '../parser/types.js';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseFile } from '../parser/index.js';
 import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, sanitizeSegment } from '../serializer/index.js';
@@ -226,6 +226,49 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     return {
       content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings }) }],
     };
+  }
+
+  function updateNode(params: {
+    node_id: string;
+    fields?: Record<string, unknown>;
+    body?: string;
+    append_body?: string;
+  }) {
+    const { node_id, fields: fieldUpdates, body: newBody, append_body } = params;
+
+    // Param validation
+    if (!fieldUpdates && newBody === undefined && append_body === undefined) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: No updates provided: at least one of fields, body, or append_body is required' }],
+        isError: true,
+      };
+    }
+    if (newBody !== undefined && append_body !== undefined) {
+      return {
+        content: [{ type: 'text' as const, text: 'Error: Cannot provide both body and append_body — they are mutually exclusive' }],
+        isError: true,
+      };
+    }
+
+    // Check node exists in DB
+    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
+    if (!nodeRow) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: Node not found: ${node_id}` }],
+        isError: true,
+      };
+    }
+
+    // Check file exists on disk
+    const absPath = join(vaultPath, node_id);
+    if (!existsSync(absPath)) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: File not found on disk: ${node_id}. Database and filesystem are out of sync.` }],
+        isError: true,
+      };
+    }
+
+    throw new Error('Update pipeline not yet implemented');
   }
 
   server.tool(
@@ -575,6 +618,30 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     async (params) => {
       try {
         return createNode(params);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'update-node',
+    'Update an existing node\'s fields and/or body content. Fields are merged (not replaced); set a field to null to remove it.',
+    {
+      node_id: z.string().describe('Vault-relative file path of the node to update, e.g. "tasks/review.md"'),
+      fields: z.record(z.string(), z.unknown()).optional()
+        .describe('Fields to update (merged with existing). Set a value to null to remove a field.'),
+      body: z.string().optional()
+        .describe('Replace the entire body content'),
+      append_body: z.string().optional()
+        .describe('Append to existing body content'),
+    },
+    async (params) => {
+      try {
+        return updateNode(params);
       } catch (err) {
         return {
           content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
