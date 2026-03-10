@@ -268,7 +268,108 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
       };
     }
 
-    throw new Error('Update pipeline not yet implemented');
+    // Read existing file
+    const raw = readFileSync(absPath, 'utf-8');
+
+    // Parse existing file
+    const parsed = parseFile(node_id, raw);
+
+    // Extract title and types (immutable in update-node)
+    const title = typeof parsed.frontmatter.title === 'string'
+      ? parsed.frontmatter.title
+      : node_id.replace(/\.md$/, '').split('/').pop()!;
+    const types = parsed.types;
+
+    // Merge fields: existing (excluding meta-keys) + updates
+    const mergedFields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(parsed.frontmatter)) {
+      if (key === 'title' || key === 'types') continue;
+      mergedFields[key] = value;
+    }
+    if (fieldUpdates) {
+      for (const [key, value] of Object.entries(fieldUpdates)) {
+        if (key === 'title' || key === 'types') continue;
+        if (value === null) {
+          delete mergedFields[key];
+        } else {
+          mergedFields[key] = value;
+        }
+      }
+    }
+
+    // Resolve body
+    let body: string;
+    if (newBody !== undefined) {
+      body = newBody;
+    } else if (append_body !== undefined) {
+      body = parsed.contentMd ? `${parsed.contentMd}\n\n${append_body}` : append_body;
+    } else {
+      body = parsed.contentMd;
+    }
+
+    // Validate against schemas
+    const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+    const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
+    let warnings: ValidationWarning[] = [];
+
+    if (hasSchemas) {
+      const mergeResult = mergeSchemaFields(db, types);
+      const forValidation = {
+        filePath: node_id,
+        frontmatter: {},
+        types,
+        fields: Object.entries(mergedFields).map(([key, value]) => ({
+          key,
+          value,
+          valueType: inferFieldType(value),
+        })),
+        wikiLinks: [],
+        mdast: { type: 'root' as const, children: [] },
+        contentText: '',
+        contentMd: '',
+      };
+      const validation = validateNode(forValidation, mergeResult);
+      warnings = validation.warnings;
+    }
+
+    // Compute field order + serialize
+    const fieldOrder = computeFieldOrder(types, db);
+    const content = serializeNode({
+      title,
+      types,
+      fields: mergedFields,
+      body: body || undefined,
+      fieldOrder,
+    });
+
+    // Write file (same path — update in place)
+    writeNodeFile(vaultPath, node_id, content);
+
+    // Stat for mtime
+    const stat = statSync(absPath);
+    const mtime = stat.mtime.toISOString();
+
+    // Parse + index + resolve refs in transaction
+    const reParsed = parseFile(node_id, content);
+    db.transaction(() => {
+      indexFile(db, reParsed, node_id, mtime, content);
+      resolveReferences(db);
+    })();
+
+    // Return hydrated node + warnings
+    const row = db.prepare(`
+      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      FROM nodes WHERE id = ?
+    `).get(node_id) as {
+      id: string; file_path: string; node_type: string;
+      content_text: string; content_md: string | null; updated_at: string;
+    };
+
+    const [node] = hydrateNodes([row]);
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings }) }],
+    };
   }
 
   server.tool(

@@ -110,4 +110,123 @@ describe('update-node', () => {
     expect(text).toContain('File not found on disk');
     expect(text).toContain('out of sync');
   });
+
+  it('updates a field while preserving existing fields', async () => {
+    await createTestNode({
+      title: 'My Task',
+      fields: { status: 'todo', priority: 'high' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'My Task.md',
+        fields: { status: 'done' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('done');
+    expect(data.node.fields.priority).toBe('high');
+
+    // Verify file content
+    const content = readFileSync(join(vaultPath, 'My Task.md'), 'utf-8');
+    expect(content).toContain('status: done');
+    expect(content).toContain('priority: high');
+  });
+
+  it('adds a new field to an existing node', async () => {
+    await createTestNode({
+      title: 'Simple Note',
+      fields: { status: 'todo' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Simple Note.md',
+        fields: { priority: 'high' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('todo');
+    expect(data.node.fields.priority).toBe('high');
+  });
+
+  it('removes a field by setting it to null', async () => {
+    await createTestNode({
+      title: 'Removable',
+      fields: { status: 'todo', priority: 'high', assignee: '[[Alice]]' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Removable.md',
+        fields: { priority: null },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('todo');
+    expect(data.node.fields.priority).toBeUndefined();
+    expect(data.node.fields.assignee).toBe('[[Alice]]');
+
+    // Verify field is gone from file
+    const content = readFileSync(join(vaultPath, 'Removable.md'), 'utf-8');
+    expect(content).not.toContain('priority');
+  });
+
+  it('ignores title and types in field updates', async () => {
+    await createTestNode({
+      title: 'Immutable',
+      fields: { status: 'todo' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Immutable.md',
+        fields: { title: 'Changed', types: ['task'], status: 'done' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('done');
+
+    // Title should remain unchanged, no duplicate keys
+    const content = readFileSync(join(vaultPath, 'Immutable.md'), 'utf-8');
+    expect(content).toContain('title: Immutable');
+    expect(content).not.toContain('title: Changed');
+  });
+
+  it('handles mixed operations: update, add, and remove fields', async () => {
+    await createTestNode({
+      title: 'Mixed',
+      fields: { status: 'todo', old_field: 'remove me' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Mixed.md',
+        fields: {
+          status: 'in-progress',
+          new_field: 'hello',
+          old_field: null,
+        },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('in-progress');
+    expect(data.node.fields.new_field).toBe('hello');
+    expect(data.node.fields.old_field).toBeUndefined();
+  });
 });
