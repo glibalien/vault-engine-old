@@ -8,6 +8,13 @@ import { validateNode } from '../schema/validator.js';
 import { evaluateComputed } from '../schema/computed.js';
 import type { ComputedDefinition } from '../schema/types.js';
 import type { FieldEntry, FieldValueType } from '../parser/types.js';
+import { existsSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseFile } from '../parser/index.js';
+import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, sanitizeSegment } from '../serializer/index.js';
+import { indexFile } from '../sync/indexer.js';
+import { resolveReferences } from '../sync/resolver.js';
+import type { ValidationWarning } from '../schema/types.js';
 
 export function createServer(db: Database.Database, vaultPath: string): McpServer {
   const server = new McpServer({ name: 'vault-engine', version: '0.1.0' });
@@ -96,6 +103,130 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     if (Array.isArray(value)) return 'list';
     if (typeof value === 'string' && /^\[\[.+\]\]$/.test(value)) return 'reference';
     return 'string';
+  }
+
+  function createNode(params: {
+    title: string;
+    types: string[];
+    fields: Record<string, unknown>;
+    body?: string;
+    parent_path?: string;
+    relationships: Array<{ target: string; rel_type: string }>;
+  }) {
+    const { title, types, body: inputBody, parent_path, relationships } = params;
+    const fields = { ...params.fields };
+    let body = inputBody ?? '';
+
+    // Step 1: Validate against schemas (if any types have schemas)
+    const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+    const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
+    let mergeResult = hasSchemas ? mergeSchemaFields(db, types) : null;
+    let warnings: ValidationWarning[] = [];
+
+    if (mergeResult) {
+      const parsed = {
+        filePath: 'pending',
+        frontmatter: {},
+        types,
+        fields: Object.entries(fields).map(([key, value]) => ({
+          key,
+          value,
+          valueType: inferFieldType(value),
+        })),
+        wikiLinks: [],
+        mdast: { type: 'root' as const, children: [] },
+        contentText: '',
+        contentMd: '',
+      };
+      const validation = validateNode(parsed, mergeResult);
+      warnings = validation.warnings;
+    }
+
+    // Step 2: Process relationships
+    for (const rel of relationships) {
+      const target = rel.target.startsWith('[[') ? rel.target : `[[${rel.target}]]`;
+
+      // Check if rel_type is a schema field
+      const mergedField = mergeResult?.fields[rel.rel_type];
+      if (mergedField) {
+        const isListType = mergedField.type.startsWith('list<');
+        if (isListType) {
+          const existing = fields[rel.rel_type];
+          if (Array.isArray(existing)) {
+            existing.push(target);
+          } else {
+            fields[rel.rel_type] = [target];
+          }
+        } else {
+          fields[rel.rel_type] = target;
+        }
+      } else if (!hasSchemas && Array.isArray(fields[rel.rel_type])) {
+        // Schema-less fallback: check if existing value is an array
+        (fields[rel.rel_type] as unknown[]).push(target);
+      } else if (!hasSchemas && rel.rel_type in fields) {
+        // Schema-less scalar field
+        fields[rel.rel_type] = target;
+      } else {
+        // No matching field — append to body
+        body = body ? `${body}\n\n${target}` : target;
+      }
+    }
+
+    // Step 3: Compute field order
+    const fieldOrder = computeFieldOrder(types, db);
+
+    // Step 4: Serialize
+    const content = serializeNode({ title, types, fields, body: body || undefined, fieldOrder });
+
+    // Step 5: Generate path
+    let relativePath: string;
+    if (parent_path) {
+      const sanitized = sanitizeSegment(title);
+      const prefix = parent_path.endsWith('/') ? parent_path : `${parent_path}/`;
+      relativePath = `${prefix}${sanitized}.md`;
+    } else {
+      relativePath = generateFilePath(title, types, fields, db);
+    }
+
+    // Step 6: Check existence
+    if (existsSync(join(vaultPath, relativePath))) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Error: File already exists at ${relativePath}. Use update-node to modify existing nodes or choose a different title.`,
+        }],
+        isError: true,
+      };
+    }
+
+    // Step 7: Write
+    writeNodeFile(vaultPath, relativePath, content);
+
+    // Step 8: Stat for mtime
+    const stat = statSync(join(vaultPath, relativePath));
+    const mtime = stat.mtime.toISOString();
+
+    // Step 9: Parse + index + resolve refs in transaction
+    const parsed = parseFile(relativePath, content);
+    db.transaction(() => {
+      indexFile(db, parsed, relativePath, mtime, content);
+      resolveReferences(db);
+    })();
+
+    // Step 10: Return hydrated node + warnings
+    const row = db.prepare(`
+      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      FROM nodes WHERE id = ?
+    `).get(relativePath) as {
+      id: string; file_path: string; node_type: string;
+      content_text: string; content_md: string | null; updated_at: string;
+    };
+
+    const [node] = hydrateNodes([row]);
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings }) }],
+    };
   }
 
   server.tool(
@@ -420,6 +551,37 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
       const result = validateNode(parsed, merge);
 
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    },
+  );
+
+  server.tool(
+    'create-node',
+    'Create a new node as a markdown file with frontmatter. Validates against schemas, writes to disk, and indexes.',
+    {
+      title: z.string().describe('Node title (required)'),
+      types: z.array(z.string()).optional().default([])
+        .describe('Schema types, e.g. ["task"] or ["task", "meeting"]'),
+      fields: z.record(z.string(), z.unknown()).optional().default({})
+        .describe('Field values, e.g. { "status": "todo", "assignee": "[[Bob]]" }'),
+      body: z.string().optional()
+        .describe('Markdown body content'),
+      parent_path: z.string().optional()
+        .describe('Override path: file created at <parent_path>/<title>.md instead of schema template'),
+      relationships: z.array(z.object({
+        target: z.string().describe('Wiki-link target, e.g. "Bob" or "[[Bob]]"'),
+        rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or appended to body'),
+      })).optional().default([])
+        .describe('Relationships to create with the node'),
+    },
+    async (params) => {
+      try {
+        return createNode(params);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
     },
   );
 

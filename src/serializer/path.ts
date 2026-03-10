@@ -10,7 +10,7 @@ function formatTemplateValue(value: unknown): string {
   return String(value);
 }
 
-function sanitizeSegment(segment: string): string {
+export function sanitizeSegment(segment: string): string {
   return segment.replace(UNSAFE_CHARS_RE, '').replace(/\s+/g, ' ').trim();
 }
 
