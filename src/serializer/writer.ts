@@ -1,6 +1,18 @@
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { acquireWriteLock, releaseWriteLock } from '../sync/watcher.js';
+
+export function deleteNodeFile(
+  vaultPath: string,
+  relativePath: string,
+): void {
+  acquireWriteLock(relativePath);
+  try {
+    unlinkSync(join(vaultPath, relativePath));
+  } finally {
+    releaseWriteLock(relativePath);
+  }
+}
 
 export function writeNodeFile(
   vaultPath: string,

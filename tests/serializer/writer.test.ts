@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { writeNodeFile } from '../../src/serializer/writer.js';
+import { writeNodeFile, deleteNodeFile } from '../../src/serializer/writer.js';
 import { isWriteLocked } from '../../src/sync/watcher.js';
 
 describe('writeNodeFile', () => {
@@ -43,5 +43,38 @@ describe('writeNodeFile', () => {
     writeNodeFile(tmpVault, 'blocker', '# Blocker\n');
     expect(() => writeNodeFile(tmpVault, 'blocker/nested.md', '# Fail\n')).toThrow();
     expect(isWriteLocked('blocker/nested.md')).toBe(false);
+  });
+});
+
+describe('deleteNodeFile', () => {
+  let tmpVault: string;
+
+  afterEach(() => {
+    rmSync(tmpVault, { recursive: true, force: true });
+  });
+
+  it('removes the file', () => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-writer-'));
+    writeFileSync(join(tmpVault, 'test.md'), '# Hello\n');
+    deleteNodeFile(tmpVault, 'test.md');
+    expect(existsSync(join(tmpVault, 'test.md'))).toBe(false);
+  });
+
+  it('throws if file does not exist', () => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-writer-'));
+    expect(() => deleteNodeFile(tmpVault, 'nonexistent.md')).toThrow();
+  });
+
+  it('releases write lock after successful delete', () => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-writer-'));
+    writeFileSync(join(tmpVault, 'test.md'), '# Hello\n');
+    deleteNodeFile(tmpVault, 'test.md');
+    expect(isWriteLocked('test.md')).toBe(false);
+  });
+
+  it('releases write lock on error', () => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-writer-'));
+    expect(() => deleteNodeFile(tmpVault, 'nonexistent.md')).toThrow();
+    expect(isWriteLocked('nonexistent.md')).toBe(false);
   });
 });
