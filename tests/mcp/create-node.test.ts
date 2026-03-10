@@ -202,4 +202,148 @@ describe('create-node', () => {
     // Body content indexed for FTS
     expect(data.node.content_text).toContain('Discuss roadmap');
   });
+
+  it('processes scalar relationship into frontmatter field', async () => {
+    const { loadSchemas } = await import('../../src/schema/loader.js');
+    loadSchemas(db, join(import.meta.dirname, '../fixtures'));
+
+    const result = await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Review PR',
+        types: ['task'],
+        fields: { status: 'todo' },
+        relationships: [
+          { target: 'Alice', rel_type: 'assignee' },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+
+    // assignee is a scalar reference field in the task schema
+    expect(data.node.fields.assignee).toBe('[[Alice]]');
+
+    const content = readFileSync(join(vaultPath, data.node.id), 'utf-8');
+    expect(content).toContain('assignee: "[[Alice]]"');
+  });
+
+  it('processes list relationship by appending to array field', async () => {
+    const { loadSchemas } = await import('../../src/schema/loader.js');
+    loadSchemas(db, join(import.meta.dirname, '../fixtures'));
+
+    const result = await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Sprint Review',
+        types: ['meeting'],
+        fields: { date: '2026-03-09' },
+        relationships: [
+          { target: 'Alice', rel_type: 'attendees' },
+          { target: 'Bob', rel_type: 'attendees' },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+
+    // attendees is list<reference> in meeting schema
+    const content = readFileSync(join(vaultPath, data.node.id), 'utf-8');
+    expect(content).toContain('[[Alice]]');
+    expect(content).toContain('[[Bob]]');
+  });
+
+  it('appends relationship to body when rel_type has no schema field', async () => {
+    const { loadSchemas } = await import('../../src/schema/loader.js');
+    loadSchemas(db, join(import.meta.dirname, '../fixtures'));
+
+    const result = await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Research Note',
+        types: ['task'],
+        fields: { status: 'todo' },
+        body: 'Some initial notes.',
+        relationships: [
+          { target: 'Related Paper', rel_type: 'wiki-link' },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = readFileSync(join(vaultPath, 'tasks/Research Note.md'), 'utf-8');
+    expect(content).toContain('Some initial notes.');
+    expect(content).toContain('[[Related Paper]]');
+  });
+
+  it('does not double-wrap targets already in [[bracket]] syntax', async () => {
+    const { loadSchemas } = await import('../../src/schema/loader.js');
+    loadSchemas(db, join(import.meta.dirname, '../fixtures'));
+
+    const result = await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Linked Task',
+        types: ['task'],
+        fields: { status: 'todo' },
+        relationships: [
+          { target: '[[Bob Jones]]', rel_type: 'assignee' },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    const content = readFileSync(join(vaultPath, data.node.id), 'utf-8');
+    expect(content).toContain('assignee: "[[Bob Jones]]"');
+    expect(content).not.toContain('[[[[');
+  });
+
+  it('created node is retrievable via get-node', async () => {
+    await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Queryable Node',
+        types: ['task'],
+        fields: { status: 'todo', priority: 'high' },
+        body: 'This should be searchable.',
+      },
+    });
+
+    // Retrieve via get-node (no schemas loaded, so path is title.md)
+    const result = await client.callTool({
+      name: 'get-node',
+      arguments: { node_id: 'Queryable Node.md' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.id).toBe('Queryable Node.md');
+    expect(data.types).toContain('task');
+    expect(data.fields.status).toBe('todo');
+    expect(data.content_text).toContain('searchable');
+  });
+
+  it('created node is found via query-nodes full-text search', async () => {
+    await client.callTool({
+      name: 'create-node',
+      arguments: {
+        title: 'Searchable Task',
+        types: ['task'],
+        fields: { status: 'todo' },
+        body: 'Unique keyword xylophone for search.',
+      },
+    });
+
+    const result = await client.callTool({
+      name: 'query-nodes',
+      arguments: { full_text: 'xylophone' },
+    });
+
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data).toHaveLength(1);
+    expect(data[0].id).toBe('Searchable Task.md');
+  });
 });
