@@ -372,6 +372,54 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     };
   }
 
+  function addRelationship(params: {
+    source_id: string;
+    target: string;
+    rel_type: string;
+  }) {
+    const { source_id, target: rawTarget, rel_type } = params;
+    const target = rawTarget.startsWith('[[') ? rawTarget : `[[${rawTarget}]]`;
+
+    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
+    if (!nodeRow) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: Node not found: ${source_id}` }],
+        isError: true,
+      };
+    }
+
+    const absPath = join(vaultPath, source_id);
+    if (!existsSync(absPath)) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: File not found on disk: ${source_id}. Database and filesystem are out of sync.` }],
+        isError: true,
+      };
+    }
+
+    // Placeholder — body append fallback
+    return updateNode({ node_id: source_id, append_body: target });
+  }
+
+  server.tool(
+    'add-relationship',
+    'Add a relationship from one node to another. Routes to frontmatter field or body wiki-link based on schema.',
+    {
+      source_id: z.string().describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
+      target: z.string().describe('Wiki-link target, e.g. "Alice" or "[[Alice]]"'),
+      rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
+    },
+    async (params) => {
+      try {
+        return addRelationship(params);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
   server.tool(
     'list-types',
     'List all node types found in the vault with their counts',
