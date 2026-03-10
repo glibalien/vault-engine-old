@@ -710,6 +710,149 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     };
   }
 
+  type MutationResult = {
+    content: Array<{ type: 'text'; text: string }>;
+    isError?: boolean;
+  };
+
+  function batchMutate(params: {
+    operations: Array<{
+      op: 'create' | 'update' | 'delete' | 'link' | 'unlink';
+      params: Record<string, unknown>;
+    }>;
+  }) {
+    const { operations } = params;
+
+    if (!operations || operations.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No operations provided' }) }],
+        isError: true,
+      };
+    }
+
+    // File snapshot tracking for rollback
+    const fileSnapshots = new Map<string, string | null>(); // path → original content (null = didn't exist)
+
+    function snapshotFile(relativePath: string) {
+      if (fileSnapshots.has(relativePath)) return;
+      const absPath = join(vaultPath, relativePath);
+      if (existsSync(absPath)) {
+        fileSnapshots.set(relativePath, readFileSync(absPath, 'utf-8'));
+      } else {
+        fileSnapshots.set(relativePath, null);
+      }
+    }
+
+    function rollbackFiles() {
+      for (const [relativePath, originalContent] of fileSnapshots) {
+        const absPath = join(vaultPath, relativePath);
+        if (originalContent === null) {
+          // File was created during batch — delete it
+          if (existsSync(absPath)) {
+            try { deleteNodeFile(vaultPath, relativePath); } catch { /* best effort */ }
+          }
+        } else {
+          // File was modified or deleted — restore original content
+          try { writeNodeFile(vaultPath, relativePath, originalContent); } catch { /* best effort */ }
+        }
+      }
+    }
+
+    interface OpResult {
+      op: string;
+      [key: string]: unknown;
+    }
+
+    try {
+      const batchResult = db.transaction(() => {
+        const results: OpResult[] = [];
+        const allWarnings: Array<{ op_index: number; warnings: unknown[] }> = [];
+
+        for (let i = 0; i < operations.length; i++) {
+          const { op, params: opParams } = operations[i];
+          let result: MutationResult;
+
+          switch (op) {
+            case 'create': {
+              const createParams = {
+                title: opParams.title as string,
+                types: (opParams.types as string[]) ?? [],
+                fields: (opParams.fields as Record<string, unknown>) ?? {},
+                body: opParams.body as string | undefined,
+                parent_path: opParams.parent_path as string | undefined,
+                relationships: (opParams.relationships as Array<{ target: string; rel_type: string }>) ?? [],
+              };
+              result = createNodeInner(createParams);
+              // Track created file for rollback AFTER createNodeInner writes it.
+              if (!result.isError) {
+                const data = JSON.parse(result.content[0].text);
+                if (!fileSnapshots.has(data.node.id)) {
+                  fileSnapshots.set(data.node.id, null); // null = file didn't exist before batch
+                }
+              }
+              break;
+            }
+            case 'update': {
+              snapshotFile((opParams as { node_id: string }).node_id);
+              result = updateNodeInner(opParams as Parameters<typeof updateNodeInner>[0]);
+              break;
+            }
+            case 'delete': {
+              snapshotFile((opParams as { node_id: string }).node_id);
+              result = deleteNodeInner(opParams as Parameters<typeof deleteNodeInner>[0]);
+              break;
+            }
+            case 'link': {
+              snapshotFile((opParams as { source_id: string }).source_id);
+              result = addRelationshipInner(opParams as Parameters<typeof addRelationshipInner>[0]);
+              break;
+            }
+            case 'unlink': {
+              snapshotFile((opParams as { source_id: string }).source_id);
+              result = removeRelationshipInner(opParams as Parameters<typeof removeRelationshipInner>[0]);
+              break;
+            }
+            default:
+              throw new Error(`Unknown operation: ${op}`);
+          }
+
+          if (result.isError) {
+            const errorText = result.content[0].text;
+            throw new Error(`Operation ${i} (${op}) failed: ${errorText}`);
+          }
+
+          // Parse result and collect
+          const parsed = JSON.parse(result.content[0].text);
+          results.push({ op, ...parsed });
+
+          // Collect warnings
+          if (parsed.warnings && parsed.warnings.length > 0) {
+            allWarnings.push({ op_index: i, warnings: parsed.warnings });
+          }
+        }
+
+        // Resolve all references once at the end
+        resolveReferences(db);
+
+        return { results, warnings: allWarnings.flatMap(w => w.warnings) };
+      })();
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(batchResult) }],
+      };
+    } catch (err) {
+      rollbackFiles();
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ error: message, rolled_back: true }),
+        }],
+        isError: true,
+      };
+    }
+  }
+
   function renameNode(params: {
     node_id: string;
     new_title: string;
@@ -1272,6 +1415,29 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
     async (params) => {
       try {
         return updateNode(params);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'batch-mutate',
+    'Execute multiple mutations atomically. All operations succeed or all are rolled back. Supports create, update, delete, link, and unlink.',
+    {
+      operations: z.array(z.object({
+        op: z.enum(['create', 'update', 'delete', 'link', 'unlink'])
+          .describe('Operation type'),
+        params: z.record(z.string(), z.unknown())
+          .describe('Operation parameters (same as standalone tool)'),
+      })).describe('Array of operations to execute in order'),
+    },
+    async (params) => {
+      try {
+        return batchMutate(params);
       } catch (err) {
         return {
           content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
