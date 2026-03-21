@@ -68,6 +68,26 @@ export function createSchema(db: Database.Database): void {
       indexed_at      TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS chunks (
+      id              TEXT PRIMARY KEY,
+      node_id         TEXT NOT NULL,
+      chunk_index     INTEGER NOT NULL,
+      heading         TEXT,
+      content         TEXT NOT NULL,
+      token_count     INTEGER NOT NULL,
+      FOREIGN KEY (node_id) REFERENCES nodes(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS embedding_queue (
+      chunk_id        TEXT PRIMARY KEY,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      error           TEXT,
+      created_at      TEXT DEFAULT (datetime('now')),
+      updated_at      TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+    );
+
     -- Indices
     CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
     CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
@@ -79,6 +99,8 @@ export function createSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_rel_target ON relationships(target_id);
     CREATE INDEX IF NOT EXISTS idx_rel_type ON relationships(rel_type);
     CREATE INDEX IF NOT EXISTS idx_rel_resolved ON relationships(resolved_target_id);
+    CREATE INDEX IF NOT EXISTS idx_chunks_node ON chunks(node_id);
+    CREATE INDEX IF NOT EXISTS idx_embedding_queue_status ON embedding_queue(status);
 
     -- FTS5 sync triggers
     CREATE TRIGGER IF NOT EXISTS nodes_fts_insert AFTER INSERT ON nodes BEGIN

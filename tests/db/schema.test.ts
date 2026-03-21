@@ -21,6 +21,8 @@ describe('createSchema', () => {
     'relationships',
     'schemas',
     'files',
+    'chunks',
+    'embedding_queue',
   ];
 
   it('creates all tables', () => {
@@ -58,6 +60,8 @@ describe('createSchema', () => {
       'idx_rel_source',
       'idx_rel_target',
       'idx_rel_type',
+      'idx_chunks_node',
+      'idx_embedding_queue_status',
     ];
     for (const idx of expectedIndices) {
       expect(indices).toContain(idx);
@@ -158,6 +162,22 @@ describe('createSchema', () => {
          VALUES ('n1', 'nonexistent-target', 'wiki-link')`
       ).run()
     ).not.toThrow();
+  });
+
+  it('creates chunks table', () => {
+    createSchema(db);
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks'"
+    ).get();
+    expect(row).toBeDefined();
+  });
+
+  it('creates embedding_queue table', () => {
+    createSchema(db);
+    const row = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='embedding_queue'"
+    ).get();
+    expect(row).toBeDefined();
   });
 
   it('cascades deletes from nodes to node_types and fields', () => {
