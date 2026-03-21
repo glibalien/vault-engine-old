@@ -7,6 +7,7 @@ import { parseFile } from '../parser/index.js';
 import { resolveReferences } from './resolver.js';
 import { mergeSchemaFields } from '../schema/merger.js';
 import { validateNode } from '../schema/validator.js';
+import { chunkFile } from '../embeddings/chunker.js';
 
 function globMd(dir: string): string[] {
   const results: string[] = [];
@@ -39,6 +40,12 @@ export function indexFile(
   raw: string,
 ): void {
   // Delete existing child rows
+  try {
+    db.prepare('DELETE FROM vec_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE node_id = ?)').run(relativePath);
+  } catch {
+    // vec_chunks table may not exist if embeddings aren't configured
+  }
+  db.prepare('DELETE FROM chunks WHERE node_id = ?').run(relativePath);
   db.prepare('DELETE FROM relationships WHERE source_id = ?').run(relativePath);
   db.prepare('DELETE FROM node_types WHERE node_id = ?').run(relativePath);
   db.prepare('DELETE FROM fields WHERE node_id = ?').run(relativePath);
@@ -108,9 +115,29 @@ export function indexFile(
     INSERT OR REPLACE INTO files (path, mtime, hash)
     VALUES (?, ?, ?)
   `).run(relativePath, mtime, hash);
+
+  // Insert chunks and queue for embedding
+  const chunks = chunkFile(parsed, relativePath);
+  const insertChunk = db.prepare(`
+    INSERT INTO chunks (id, node_id, chunk_index, heading, content, token_count)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertQueue = db.prepare(`
+    INSERT INTO embedding_queue (chunk_id) VALUES (?)
+  `);
+  for (const chunk of chunks) {
+    insertChunk.run(chunk.id, chunk.nodeId, chunk.chunkIndex, chunk.heading, chunk.content, chunk.tokenCount);
+    insertQueue.run(chunk.id);
+  }
 }
 
 export function deleteFile(db: Database.Database, relativePath: string): void {
+  try {
+    db.prepare('DELETE FROM vec_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE node_id = ?)').run(relativePath);
+  } catch {
+    // vec_chunks may not exist
+  }
+  db.prepare('DELETE FROM chunks WHERE node_id = ?').run(relativePath);
   db.prepare('DELETE FROM relationships WHERE source_id = ?').run(relativePath);
   db.prepare('DELETE FROM fields WHERE node_id = ?').run(relativePath);
   db.prepare('DELETE FROM node_types WHERE node_id = ?').run(relativePath);
@@ -195,6 +222,13 @@ export function rebuildIndex(
 
   const run = db.transaction(() => {
     // Clear all tables (children before parents for FK order)
+    try {
+      db.prepare('DELETE FROM vec_chunks').run();
+    } catch {
+      // vec_chunks may not exist
+    }
+    db.prepare('DELETE FROM embedding_queue').run();
+    db.prepare('DELETE FROM chunks').run();
     db.prepare('DELETE FROM relationships').run();
     db.prepare('DELETE FROM fields').run();
     db.prepare('DELETE FROM node_types').run();

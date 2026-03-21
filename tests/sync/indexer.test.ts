@@ -425,6 +425,63 @@ describe('incrementalIndex', () => {
   });
 });
 
+describe('indexFile chunk integration', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function loadAndParse(fixture: string, relativePath: string) {
+    const raw = readFileSync(resolve(fixturesDir, fixture), 'utf-8');
+    return { parsed: parseFile(relativePath, raw), raw };
+  }
+
+  it('creates chunks when indexing a file', () => {
+    const { parsed, raw } = loadAndParse('sample-meeting.md', 'meetings/q1.md');
+    indexFile(db, parsed, 'meetings/q1.md', '2025-03-06T00:00:00.000Z', raw);
+    const chunks = db.prepare('SELECT * FROM chunks WHERE node_id = ? ORDER BY chunk_index').all('meetings/q1.md') as any[];
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks[0].node_id).toBe('meetings/q1.md');
+    expect(chunks[0].content).toBeTruthy();
+    expect(chunks[0].token_count).toBeGreaterThan(0);
+  });
+
+  it('creates embedding_queue entries for each chunk', () => {
+    const { parsed, raw } = loadAndParse('sample-meeting.md', 'meetings/q1.md');
+    indexFile(db, parsed, 'meetings/q1.md', '2025-03-06T00:00:00.000Z', raw);
+    const queueEntries = db.prepare('SELECT * FROM embedding_queue').all() as any[];
+    const chunks = db.prepare('SELECT * FROM chunks WHERE node_id = ?').all('meetings/q1.md') as any[];
+    expect(queueEntries.length).toBe(chunks.length);
+    expect(queueEntries.every((e: any) => e.status === 'pending')).toBe(true);
+  });
+
+  it('replaces chunks on re-index', () => {
+    const { parsed, raw } = loadAndParse('sample-meeting.md', 'meetings/q1.md');
+    indexFile(db, parsed, 'meetings/q1.md', '2025-03-06T00:00:00.000Z', raw);
+    const before = db.prepare('SELECT COUNT(*) as count FROM chunks WHERE node_id = ?').get('meetings/q1.md') as any;
+    indexFile(db, parsed, 'meetings/q1.md', '2025-03-07T00:00:00.000Z', raw);
+    const after = db.prepare('SELECT COUNT(*) as count FROM chunks WHERE node_id = ?').get('meetings/q1.md') as any;
+    expect(after.count).toBe(before.count);
+  });
+
+  it('deletes chunks when deleteFile is called', () => {
+    const { parsed, raw } = loadAndParse('sample-meeting.md', 'meetings/q1.md');
+    indexFile(db, parsed, 'meetings/q1.md', '2025-03-06T00:00:00.000Z', raw);
+    deleteFile(db, 'meetings/q1.md');
+    const chunks = db.prepare('SELECT * FROM chunks WHERE node_id = ?').all('meetings/q1.md');
+    expect(chunks).toHaveLength(0);
+    const queue = db.prepare('SELECT * FROM embedding_queue').all();
+    expect(queue).toHaveLength(0);
+  });
+});
+
 describe('indexFile validation (is_valid)', () => {
   let db: Database.Database;
 
