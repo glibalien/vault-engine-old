@@ -15,9 +15,20 @@ import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, dele
 import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
+import { createProvider } from '../embeddings/provider-factory.js';
+import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
+import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
 
-export function createServer(db: Database.Database, vaultPath: string): McpServer {
+export function createServer(
+  db: Database.Database,
+  vaultPath: string,
+  opts?: { embeddingConfig?: EmbeddingConfig },
+): McpServer {
   const server = new McpServer({ name: 'vault-engine', version: '0.1.0' });
+
+  const embeddingProvider: EmbeddingProvider | null = opts?.embeddingConfig
+    ? createProvider(opts.embeddingConfig)
+    : null;
 
   // Shared helper: hydrate node rows with types and fields
   function hydrateNodes(
@@ -1442,6 +1453,50 @@ export function createServer(db: Database.Database, vaultPath: string): McpServe
         return {
           content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'semantic-search',
+    'Search by semantic similarity with optional type and field filters',
+    {
+      query: z.string().describe('Natural language search query'),
+      schema_type: z.string().optional().describe('Filter results by schema type'),
+      filters: z.array(z.object({
+        field: z.string(),
+        operator: z.literal('eq'),
+        value: z.string(),
+      })).optional().describe('Field equality filters'),
+      limit: z.number().optional().describe('Max results (default 10)'),
+      include_chunks: z.boolean().optional().describe('Include matching chunk text'),
+    },
+    async ({ query, schema_type, filters, limit, include_chunks }) => {
+      if (!embeddingProvider) {
+        return {
+          content: [{ type: 'text' as const, text: 'Semantic search is not configured. Provide an embedding config when starting the engine.' }],
+        };
+      }
+      try {
+        const [queryVector] = await embeddingProvider.embed([query]);
+        const queryBuffer = Buffer.from(new Float32Array(queryVector).buffer);
+        const results = semanticSearch(db, queryBuffer, {
+          schema_type, filters, limit, include_chunks,
+        });
+        const pendingEmbeddings = getPendingEmbeddingCount(db);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              results,
+              ...(pendingEmbeddings > 0 ? { pending_embeddings: pendingEmbeddings } : {}),
+            }, null, 2),
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Semantic search failed: ${err instanceof Error ? err.message : String(err)}` }],
         };
       }
     },
