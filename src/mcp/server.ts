@@ -1269,6 +1269,10 @@ export function createServer(
               }
               case 'in': {
                 const vals = Array.isArray(value) ? value : [value];
+                if (vals.length === 0) {
+                  conditions.push('0'); // Always false — empty IN set matches nothing
+                  break;
+                }
                 const placeholders = vals.map(() => '?').join(', ');
                 conditions.push(`${alias}.key = ? AND ${alias}.value_text IN (${placeholders})`);
                 params.push(field, ...vals.map(String));

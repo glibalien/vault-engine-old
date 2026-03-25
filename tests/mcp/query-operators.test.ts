@@ -238,6 +238,17 @@ describe('query-nodes comparison operators', () => {
     }
   });
 
+  it('in: empty array matches nothing', async () => {
+    const result = await callQuery({
+      schema_type: 'task',
+      filters: [{ field: 'status', operator: 'in', value: [] }],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const nodes = parseResult(result);
+    expect(nodes).toHaveLength(0);
+  });
+
   it('contains: escapes underscore wildcard', async () => {
     // _ is a SQL LIKE wildcard matching any single char — must be escaped
     const result = await callQuery({
