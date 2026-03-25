@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { parseFile } from '../parser/index.js';
 import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, deleteNodeFile, sanitizeSegment } from '../serializer/index.js';
 import { indexFile, deleteFile } from '../sync/indexer.js';
+import { releaseWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
@@ -141,7 +142,7 @@ export function createServer(
     body?: string;
     parent_path?: string;
     relationships: Array<{ target: string; rel_type: string }>;
-  }) {
+  }, deferredLocks?: Set<string>) {
     const { title, types, body: inputBody, parent_path, relationships } = params;
     const fields = { ...params.fields };
     let body = inputBody ?? '';
@@ -226,7 +227,7 @@ export function createServer(
     }
 
     // Step 7: Write
-    writeNodeFile(vaultPath, relativePath, content);
+    writeNodeFile(vaultPath, relativePath, content, deferredLocks);
 
     // Step 8: Stat for mtime
     const stat = statSync(join(vaultPath, relativePath));
@@ -265,7 +266,7 @@ export function createServer(
     fields?: Record<string, unknown>;
     body?: string;
     append_body?: string;
-  }) {
+  }, deferredLocks?: Set<string>) {
     const { node_id, fields: fieldUpdates, body: newBody, append_body } = params;
 
     // Param validation
@@ -363,7 +364,7 @@ export function createServer(
     });
 
     // Write file (same path — update in place)
-    writeNodeFile(vaultPath, node_id, content);
+    writeNodeFile(vaultPath, node_id, content, deferredLocks);
 
     // Stat for mtime
     const stat = statSync(absPath);
@@ -418,7 +419,7 @@ export function createServer(
     source_id: string;
     target: string;
     rel_type: string;
-  }) {
+  }, deferredLocks?: Set<string>) {
     const { source_id, target: rawTarget, rel_type } = params;
     const target = rawTarget.startsWith('[[') ? rawTarget : `[[${rawTarget}]]`;
 
@@ -446,7 +447,7 @@ export function createServer(
       if (bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
         return returnCurrentNode(source_id);
       }
-      return updateNodeInner({ node_id: source_id, append_body: target });
+      return updateNodeInner({ node_id: source_id, append_body: target }, deferredLocks);
     }
 
     // Check schemas
@@ -473,13 +474,13 @@ export function createServer(
           return updateNodeInner({
             node_id: source_id,
             fields: { [rel_type]: [...currentArray, target] },
-          });
+          }, deferredLocks);
         } else {
           // Scalar field
           return updateNodeInner({
             node_id: source_id,
             fields: { [rel_type]: target },
-          });
+          }, deferredLocks);
         }
       }
     }
@@ -499,12 +500,12 @@ export function createServer(
         return updateNodeInner({
           node_id: source_id,
           fields: { [rel_type]: [...existing, target] },
-        });
+        }, deferredLocks);
       } else if (rel_type in parsed.frontmatter) {
         return updateNodeInner({
           node_id: source_id,
           fields: { [rel_type]: target },
-        });
+        }, deferredLocks);
       }
     }
 
@@ -513,7 +514,7 @@ export function createServer(
     if (bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
       return returnCurrentNode(source_id);
     }
-    return updateNodeInner({ node_id: source_id, append_body: target });
+    return updateNodeInner({ node_id: source_id, append_body: target }, deferredLocks);
   }
 
   function addRelationship(params: Parameters<typeof addRelationshipInner>[0]) {
@@ -545,7 +546,7 @@ export function createServer(
     source_id: string;
     target: string;
     rel_type: string;
-  }) {
+  }, deferredLocks?: Set<string>) {
     const { source_id, target: rawTarget, rel_type } = params;
 
     // Normalize: extract inner target from [[target]] or [[target|alias]]
@@ -574,7 +575,7 @@ export function createServer(
         return returnCurrentNode(source_id);
       }
       const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
-      return updateNodeInner({ node_id: source_id, body: newBody });
+      return updateNodeInner({ node_id: source_id, body: newBody }, deferredLocks);
     }
 
     // Check schemas
@@ -599,7 +600,7 @@ export function createServer(
           return updateNodeInner({
             node_id: source_id,
             fields: { [rel_type]: filtered },
-          });
+          }, deferredLocks);
         } else {
           // Scalar: remove if matches
           const existing = parsed.frontmatter[rel_type];
@@ -608,7 +609,7 @@ export function createServer(
           if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
             return returnCurrentNode(source_id);
           }
-          return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } });
+          return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } }, deferredLocks);
         }
       }
     }
@@ -626,13 +627,13 @@ export function createServer(
         return updateNodeInner({
           node_id: source_id,
           fields: { [rel_type]: filtered },
-        });
+        }, deferredLocks);
       } else if (typeof existing === 'string' && rel_type in parsed.frontmatter) {
         const inner = existing.match(/^\[\[([^\]|]+)/)?.[1];
         if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
           return returnCurrentNode(source_id);
         }
-        return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } });
+        return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } }, deferredLocks);
       }
     }
 
@@ -642,7 +643,7 @@ export function createServer(
       return returnCurrentNode(source_id);
     }
     const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
-    return updateNodeInner({ node_id: source_id, body: newBody });
+    return updateNodeInner({ node_id: source_id, body: newBody }, deferredLocks);
   }
 
   function removeRelationship(params: Parameters<typeof removeRelationshipInner>[0]) {
@@ -670,7 +671,7 @@ export function createServer(
     },
   );
 
-  function deleteNodeInner(params: { node_id: string }) {
+  function deleteNodeInner(params: { node_id: string }, deferredLocks?: Set<string>) {
     const { node_id } = params;
 
     const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
@@ -683,7 +684,7 @@ export function createServer(
       return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
-    deleteNodeFile(vaultPath, node_id);
+    deleteNodeFile(vaultPath, node_id, deferredLocks);
     deleteFile(db, node_id);
 
     return {
@@ -708,6 +709,9 @@ export function createServer(
       return toolError('No operations provided', 'VALIDATION_ERROR');
     }
 
+    // Batch-scoped deferred locks: acquired per-file during batch, released all at once in finally
+    const deferredLocks = new Set<string>();
+
     // File snapshot tracking for rollback
     const fileSnapshots = new Map<string, string | null>(); // path → original content (null = didn't exist)
 
@@ -722,6 +726,7 @@ export function createServer(
     }
 
     function rollbackFiles() {
+      // Rollback calls do NOT use deferred locks — they need immediate release since they're cleanup
       for (const [relativePath, originalContent] of fileSnapshots) {
         const absPath = join(vaultPath, relativePath);
         if (originalContent === null) {
@@ -760,7 +765,7 @@ export function createServer(
                 parent_path: opParams.parent_path as string | undefined,
                 relationships: (opParams.relationships as Array<{ target: string; rel_type: string }>) ?? [],
               };
-              result = createNodeInner(createParams);
+              result = createNodeInner(createParams, deferredLocks);
               // Track created file for rollback AFTER createNodeInner writes it.
               if (!result.isError) {
                 const data = JSON.parse(result.content[0].text);
@@ -772,22 +777,22 @@ export function createServer(
             }
             case 'update': {
               snapshotFile((opParams as { node_id: string }).node_id);
-              result = updateNodeInner(opParams as Parameters<typeof updateNodeInner>[0]);
+              result = updateNodeInner(opParams as Parameters<typeof updateNodeInner>[0], deferredLocks);
               break;
             }
             case 'delete': {
               snapshotFile((opParams as { node_id: string }).node_id);
-              result = deleteNodeInner(opParams as Parameters<typeof deleteNodeInner>[0]);
+              result = deleteNodeInner(opParams as Parameters<typeof deleteNodeInner>[0], deferredLocks);
               break;
             }
             case 'link': {
               snapshotFile((opParams as { source_id: string }).source_id);
-              result = addRelationshipInner(opParams as Parameters<typeof addRelationshipInner>[0]);
+              result = addRelationshipInner(opParams as Parameters<typeof addRelationshipInner>[0], deferredLocks);
               break;
             }
             case 'unlink': {
               snapshotFile((opParams as { source_id: string }).source_id);
-              result = removeRelationshipInner(opParams as Parameters<typeof removeRelationshipInner>[0]);
+              result = removeRelationshipInner(opParams as Parameters<typeof removeRelationshipInner>[0], deferredLocks);
               break;
             }
             default:
@@ -828,6 +833,10 @@ export function createServer(
         }],
         isError: true,
       };
+    } finally {
+      for (const lockedPath of deferredLocks) {
+        releaseWriteLock(lockedPath);
+      }
     }
   }
 
