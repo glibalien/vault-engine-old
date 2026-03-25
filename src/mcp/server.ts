@@ -16,7 +16,7 @@ import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
-import { projectStatusHandler } from './workflow-tools.js';
+import { projectStatusHandler, dailySummaryHandler } from './workflow-tools.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1632,6 +1632,18 @@ export function createServer(
     },
     async ({ project_id }) => {
       return projectStatusHandler(db, hydrateNodes, { project_id });
+    },
+  );
+
+  server.tool(
+    'daily-summary',
+    'Get a summary for a given date: overdue tasks, due today, due this week, recently modified nodes, active projects with task stats.',
+    {
+      date: z.string().optional()
+        .describe('ISO date (YYYY-MM-DD), defaults to today'),
+    },
+    async ({ date }) => {
+      return dailySummaryHandler(db, { date });
     },
   );
 

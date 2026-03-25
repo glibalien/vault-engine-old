@@ -118,6 +118,144 @@ export function computeProjectTaskStats(
   };
 }
 
+/**
+ * Get the end of the ISO week (Sunday) for a given date.
+ * ISO weeks start Monday. Sunday = day 7.
+ */
+function endOfIsoWeek(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  const dayOfWeek = d.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+  d.setUTCDate(d.getUTCDate() + daysUntilSunday);
+  return d.toISOString().slice(0, 10);
+}
+
+interface DueDateTask {
+  id: string;
+  title: string;
+  types: string[];
+  due_date: string;
+  status: string;
+  assignee: string | null;
+}
+
+function queryDueTasks(db: Database.Database): DueDateTask[] {
+  const rows = db.prepare(`
+    SELECT n.id, n.title,
+      SUBSTR(fd.value_date, 1, 10) AS due_date,
+      fs.value_text AS status,
+      fa.value_text AS assignee
+    FROM nodes n
+    JOIN fields fd ON fd.node_id = n.id AND fd.key = 'due_date'
+    LEFT JOIN fields fs ON fs.node_id = n.id AND fs.key = 'status'
+    LEFT JOIN fields fa ON fa.node_id = n.id AND fa.key = 'assignee'
+    WHERE fd.value_date IS NOT NULL
+  `).all() as Array<{
+    id: string; title: string | null;
+    due_date: string; status: string | null; assignee: string | null;
+  }>;
+
+  const nodeIds = rows.map(r => r.id);
+  const typeRows = nodeIds.length > 0
+    ? db.prepare(`SELECT node_id, schema_type FROM node_types WHERE node_id IN (${nodeIds.map(() => '?').join(',')})`)
+        .all(...nodeIds) as Array<{ node_id: string; schema_type: string }>
+    : [];
+  const typeMap = new Map<string, string[]>();
+  for (const r of typeRows) {
+    const arr = typeMap.get(r.node_id) ?? [];
+    arr.push(r.schema_type);
+    typeMap.set(r.node_id, arr);
+  }
+
+  return rows.map(r => ({
+    id: r.id,
+    title: r.title ?? r.id.replace(/\.md$/, '').split('/').pop()!,
+    types: typeMap.get(r.id) ?? [],
+    due_date: r.due_date,
+    status: r.status ?? 'unknown',
+    assignee: r.assignee ?? null,
+  }));
+}
+
+export function dailySummaryHandler(
+  db: Database.Database,
+  params: { date?: string },
+) {
+  const today = params.date ?? new Date().toISOString().slice(0, 10);
+  const weekEnd = endOfIsoWeek(today);
+
+  const allDueTasks = queryDueTasks(db);
+  const isActive = (t: DueDateTask) => t.status !== 'done' && t.status !== 'cancelled';
+
+  const overdue = allDueTasks.filter(t => t.due_date < today && isActive(t));
+  const dueToday = allDueTasks.filter(t => t.due_date === today && isActive(t));
+  const dueThisWeek = allDueTasks.filter(t =>
+    t.due_date > today && t.due_date <= weekEnd && isActive(t)
+  );
+
+  // Recently modified: typed nodes only, limit 20
+  const recentlyModified = db.prepare(`
+    SELECT DISTINCT n.id, n.title, n.updated_at
+    FROM nodes n
+    JOIN node_types nt ON nt.node_id = n.id
+    ORDER BY n.updated_at DESC
+    LIMIT 20
+  `).all() as Array<{ id: string; title: string | null; updated_at: string }>;
+
+  // Load types for recently modified
+  const recentIds = recentlyModified.map(r => r.id);
+  const recentTypeRows = recentIds.length > 0
+    ? db.prepare(`SELECT node_id, schema_type FROM node_types WHERE node_id IN (${recentIds.map(() => '?').join(',')})`)
+        .all(...recentIds) as Array<{ node_id: string; schema_type: string }>
+    : [];
+  const recentTypeMap = new Map<string, string[]>();
+  for (const r of recentTypeRows) {
+    const arr = recentTypeMap.get(r.node_id) ?? [];
+    arr.push(r.schema_type);
+    recentTypeMap.set(r.node_id, arr);
+  }
+
+  // Active projects: status = 'active' OR no status field
+  const activeProjects = db.prepare(`
+    SELECT DISTINCT n.id, n.title
+    FROM nodes n
+    JOIN node_types nt ON nt.node_id = n.id AND nt.schema_type = 'project'
+    LEFT JOIN fields fs ON fs.node_id = n.id AND fs.key = 'status'
+    WHERE fs.value_text = 'active' OR fs.value_text IS NULL
+  `).all() as Array<{ id: string; title: string | null }>;
+
+  const activeProjectStats = activeProjects.map(p => {
+    const stats = computeProjectTaskStats(db, p.id, today);
+    return {
+      id: p.id,
+      title: p.title ?? p.id.replace(/\.md$/, '').split('/').pop()!,
+      status: 'active',
+      total_tasks: stats.total_tasks,
+      completed_tasks: stats.completed_tasks,
+      completion_pct: stats.completion_pct,
+    };
+  });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        date: today,
+        overdue,
+        due_today: dueToday,
+        due_this_week: dueThisWeek,
+        recently_modified: recentlyModified.map(r => ({
+          id: r.id,
+          title: r.title ?? r.id.replace(/\.md$/, '').split('/').pop()!,
+          types: recentTypeMap.get(r.id) ?? [],
+          updated_at: r.updated_at,
+        })),
+        active_projects: activeProjectStats,
+      }),
+    }],
+  };
+}
+
 export function projectStatusHandler(
   db: Database.Database,
   hydrateNodes: HydrateNodes,
