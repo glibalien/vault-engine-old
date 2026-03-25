@@ -5,7 +5,7 @@ interface NodeLookupRow {
   title: string | null;
 }
 
-function buildLookupMaps(db: Database.Database): {
+export function buildLookupMaps(db: Database.Database): {
   titleMap: Map<string, string[]>;
   pathMap: Map<string, string[]>;
 } {
@@ -76,7 +76,7 @@ export function resolveReferences(db: Database.Database): { resolved: number; un
   return { resolved, unresolved: stillUnresolved };
 }
 
-function resolveTargetWithMaps(
+export function resolveTargetWithMaps(
   wikiLinkTarget: string,
   titleMap: Map<string, string[]>,
   pathMap: Map<string, string[]>,

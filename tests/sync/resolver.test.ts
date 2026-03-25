@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
 import { indexFile, rebuildIndex, incrementalIndex } from '../../src/sync/indexer.js';
-import { resolveTarget, resolveReferences } from '../../src/sync/resolver.js';
+import { resolveTarget, resolveReferences, buildLookupMaps, resolveTargetWithMaps } from '../../src/sync/resolver.js';
 import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve, join } from 'path';
@@ -383,5 +383,71 @@ describe('resolveTarget edge cases', () => {
       "SELECT resolved_target_id FROM relationships WHERE source_id = 'tasks/review-vendor-proposals.md' AND target_id = 'Alice Smith'"
     ).get() as any;
     expect(rel.resolved_target_id).toBe('people/alice-smith.md');
+  });
+});
+
+describe('buildLookupMaps (exported)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('builds title and path lookup maps from indexed nodes', () => {
+    const fixtureTask = readFileSync(resolve(fixturesDir, 'sample-task.md'), 'utf-8');
+    const fixturePerson = readFileSync(resolve(fixturesDir, 'sample-person.md'), 'utf-8');
+
+    db.transaction(() => {
+      const parsedTask = parseFile('tasks/review-vendor-proposals.md', fixtureTask);
+      indexFile(db, parsedTask, 'tasks/review-vendor-proposals.md', '2025-03-10T00:00:00.000Z', fixtureTask);
+      const parsedPerson = parseFile('people/alice-smith.md', fixturePerson);
+      indexFile(db, parsedPerson, 'people/alice-smith.md', '2025-03-10T00:00:00.000Z', fixturePerson);
+    })();
+
+    const { titleMap, pathMap } = buildLookupMaps(db);
+
+    expect(titleMap.has('review vendor proposals')).toBe(true);
+    expect(titleMap.has('alice smith')).toBe(true);
+
+    expect(pathMap.has('review-vendor-proposals')).toBe(true);
+    expect(pathMap.has('tasks/review-vendor-proposals')).toBe(true);
+  });
+});
+
+describe('resolveTargetWithMaps (exported)', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function seed(path: string, raw: string) {
+    const parsed = parseFile(path, raw);
+    indexFile(db, parsed, path, '2025-03-10T00:00:00.000Z', raw);
+  }
+
+  it('resolves by title match using pre-built maps', () => {
+    seed('people/alice-smith.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    const { titleMap, pathMap } = buildLookupMaps(db);
+    expect(resolveTargetWithMaps('Alice Smith', titleMap, pathMap)).toBe('people/alice-smith.md');
+  });
+
+  it('returns null for ambiguous matches', () => {
+    seed('people/alice-smith.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    seed('work/alice-smith.md', '---\ntitle: Alice Smith\ntypes: [person]\n---\nBio.');
+    const { titleMap, pathMap } = buildLookupMaps(db);
+    expect(resolveTargetWithMaps('Alice Smith', titleMap, pathMap)).toBeNull();
   });
 });
