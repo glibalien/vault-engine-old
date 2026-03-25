@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type HydrateNodes = (rows: any[], opts?: any) => any[];
 
@@ -251,6 +252,94 @@ export function dailySummaryHandler(
           updated_at: r.updated_at,
         })),
         active_projects: activeProjectStats,
+      }),
+    }],
+  };
+}
+
+interface MeetingNotesParams {
+  title: string;
+  date: string;
+  attendees: string[];
+  project?: string;
+  agenda?: string;
+  body?: string;
+}
+
+export function createMeetingNotesHandler(
+  db: Database.Database,
+  batchMutate: (params: { operations: Array<{ op: string; params: Record<string, unknown> }> }) => any,
+  hydrateNodes: HydrateNodes,
+  params: MeetingNotesParams,
+) {
+  const { title, date, attendees, project, agenda, body } = params;
+
+  // Batch-resolve attendees
+  const { titleMap, pathMap } = buildLookupMaps(db);
+  const resolvedAttendees: string[] = [];
+  const createdAttendees: string[] = [];
+
+  const operations: Array<{ op: string; params: Record<string, unknown> }> = [];
+
+  for (const name of attendees) {
+    const nodeId = resolveTargetWithMaps(name, titleMap, pathMap);
+    if (nodeId) {
+      resolvedAttendees.push(name);
+    } else {
+      createdAttendees.push(name);
+      operations.push({
+        op: 'create',
+        params: { title: name, types: ['person'] },
+      });
+    }
+  }
+
+  // Build attendees wiki-link list
+  const attendeeLinks = attendees.map(name => `[[${name}]]`);
+
+  // Build meeting fields
+  const meetingFields: Record<string, unknown> = {
+    date,
+    attendees: attendeeLinks,
+  };
+  if (project) {
+    meetingFields.project = `[[${project.replace(/^\[\[/, '').replace(/\]\]$/, '')}]]`;
+  }
+
+  // Build meeting body
+  let meetingBody = '';
+  if (agenda) meetingBody += agenda;
+  if (body) meetingBody += (meetingBody ? '\n\n' : '') + body;
+
+  operations.push({
+    op: 'create',
+    params: {
+      title,
+      types: ['meeting'],
+      fields: meetingFields,
+      ...(meetingBody ? { body: meetingBody } : {}),
+    },
+  });
+
+  const result = batchMutate({ operations });
+
+  // Check for error
+  const parsed = JSON.parse(result.content[0].text);
+  if (result.isError || parsed.error) {
+    return result;
+  }
+
+  // Extract meeting node from results (last create op)
+  const meetingResult = parsed.results[parsed.results.length - 1];
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        node: meetingResult.node,
+        warnings: parsed.warnings,
+        resolved_attendees: resolvedAttendees,
+        created_attendees: createdAttendees,
       }),
     }],
   };

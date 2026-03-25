@@ -16,7 +16,7 @@ import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
-import { projectStatusHandler, dailySummaryHandler } from './workflow-tools.js';
+import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler } from './workflow-tools.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1644,6 +1644,22 @@ export function createServer(
     },
     async ({ date }) => {
       return dailySummaryHandler(db, { date });
+    },
+  );
+
+  server.tool(
+    'create-meeting-notes',
+    'Create a meeting note with linked attendees and optional project. Auto-creates minimal person stubs for unknown attendees. Returns the meeting node plus lists of resolved vs. created attendees.',
+    {
+      title: z.string().min(1).describe('Meeting title'),
+      date: z.string().describe('Meeting date (ISO format YYYY-MM-DD)'),
+      attendees: z.array(z.string().min(1)).describe('Attendee names (resolved to person nodes; stubs created for unknowns)'),
+      project: z.string().optional().describe('Project name or wiki-link to associate'),
+      agenda: z.string().optional().describe('Agenda text for the meeting body'),
+      body: z.string().optional().describe('Additional body content'),
+    },
+    async (params) => {
+      return createMeetingNotesHandler(db, batchMutate, hydrateNodes, params);
     },
   );
 
