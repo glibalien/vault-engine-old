@@ -1659,7 +1659,7 @@ export function createServer(
       body: z.string().optional().describe('Additional body content'),
     },
     async (params) => {
-      return createMeetingNotesHandler(db, batchMutate, hydrateNodes, params);
+      return createMeetingNotesHandler(db, batchMutate, params);
     },
   );
 

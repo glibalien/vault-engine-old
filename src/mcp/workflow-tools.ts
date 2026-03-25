@@ -269,7 +269,6 @@ interface MeetingNotesParams {
 export function createMeetingNotesHandler(
   db: Database.Database,
   batchMutate: (params: { operations: Array<{ op: string; params: Record<string, unknown> }> }) => any,
-  hydrateNodes: HydrateNodes,
   params: MeetingNotesParams,
 ) {
   const { title, date, attendees, project, agenda, body } = params;
