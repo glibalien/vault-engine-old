@@ -32,7 +32,7 @@ export function createServer(
 
   // Shared helper: hydrate node rows with types and fields
   function hydrateNodes(
-    nodeRows: Array<{ id: string; file_path: string; node_type: string; content_text: string; content_md: string | null; updated_at: string }>,
+    nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }>,
     opts?: { includeContentMd?: boolean },
   ) {
     if (nodeRows.length === 0) return [];
@@ -67,6 +67,7 @@ export function createServer(
         id: row.id,
         file_path: row.file_path,
         node_type: row.node_type,
+        title: row.title,
         types: typesMap.get(row.id) ?? [],
         fields: fieldsMap.get(row.id) ?? {},
         content_text: row.content_text,
@@ -223,10 +224,10 @@ export function createServer(
 
     // Step 10: Return hydrated node + warnings
     const row = db.prepare(`
-      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
       FROM nodes WHERE id = ?
     `).get(relativePath) as {
-      id: string; file_path: string; node_type: string;
+      id: string; file_path: string; node_type: string; title: string | null;
       content_text: string; content_md: string | null; updated_at: string;
     };
 
@@ -372,10 +373,10 @@ export function createServer(
 
     // Return hydrated node + warnings
     const row = db.prepare(`
-      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
       FROM nodes WHERE id = ?
     `).get(node_id) as {
-      id: string; file_path: string; node_type: string;
+      id: string; file_path: string; node_type: string; title: string | null;
       content_text: string; content_md: string | null; updated_at: string;
     };
 
@@ -396,10 +397,10 @@ export function createServer(
 
   function returnCurrentNode(nodeId: string) {
     const row = db.prepare(`
-      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
       FROM nodes WHERE id = ?
     `).get(nodeId) as {
-      id: string; file_path: string; node_type: string;
+      id: string; file_path: string; node_type: string; title: string | null;
       content_text: string; content_md: string | null; updated_at: string;
     } | undefined;
     if (!row) {
@@ -1012,10 +1013,10 @@ export function createServer(
 
     // Return hydrated node
     const row = db.prepare(`
-      SELECT id, file_path, node_type, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
       FROM nodes WHERE id = ?
     `).get(newPath) as {
-      id: string; file_path: string; node_type: string;
+      id: string; file_path: string; node_type: string; title: string | null;
       content_text: string; content_md: string | null; updated_at: string;
     };
 
@@ -1083,9 +1084,9 @@ export function createServer(
     },
     async ({ node_id, include_relationships, include_computed }) => {
       const row = db.prepare(`
-        SELECT id, file_path, node_type, content_text, content_md, updated_at
+        SELECT id, file_path, node_type, title, content_text, content_md, updated_at
         FROM nodes WHERE id = ?
-      `).get(node_id) as { id: string; file_path: string; node_type: string; content_text: string; content_md: string | null; updated_at: string } | undefined;
+      `).get(node_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
 
       if (!row) {
         return {
@@ -1156,13 +1157,13 @@ export function createServer(
       params.push(limit);
 
       const rows = db.prepare(`
-        SELECT n.id, n.file_path, n.node_type, n.content_text, n.content_md, n.updated_at
+        SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
         FROM nodes n
         ${joinType}
         ${where}
         ORDER BY n.updated_at DESC
         LIMIT ?
-      `).all(...params) as Array<{ id: string; file_path: string; node_type: string; content_text: string; content_md: string | null; updated_at: string }>;
+      `).all(...params) as Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }>;
 
       const nodes = hydrateNodes(rows);
       return { content: [{ type: 'text', text: JSON.stringify(nodes) }] };
@@ -1206,7 +1207,7 @@ export function createServer(
         let defaultOrder: string;
         if (full_text) {
           selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.content_text, n.content_md, n.updated_at, fts.rank
+            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at, fts.rank
             FROM nodes_fts fts
             JOIN nodes n ON n.rowid = fts.rowid`;
           conditions.push('nodes_fts MATCH ?');
@@ -1214,7 +1215,7 @@ export function createServer(
           defaultOrder = 'fts.rank';
         } else {
           selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.content_text, n.content_md, n.updated_at
+            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
             FROM nodes n`;
           defaultOrder = 'n.updated_at DESC';
         }
@@ -1262,7 +1263,7 @@ export function createServer(
         const sql = `${selectFrom}\n${joins.join('\n')}\n${where}\nORDER BY ${orderClause}\nLIMIT ?`;
 
         const rows = db.prepare(sql).all(...params) as Array<{
-          id: string; file_path: string; node_type: string;
+          id: string; file_path: string; node_type: string; title: string | null;
           content_text: string; content_md: string | null; updated_at: string;
         }>;
 

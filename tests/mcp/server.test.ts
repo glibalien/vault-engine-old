@@ -84,6 +84,7 @@ describe('MCP server', () => {
       expect(data.types).toContain('task');
       expect(data.fields.status).toBe('todo');
       expect(data.fields.priority).toBe('high');
+      expect(data.title).toBe('Review vendor proposals');
       expect(data.content_text).toContain('vendor');
       expect(data.content_md).toContain('vendor');
       expect(data.updated_at).toBeDefined();
