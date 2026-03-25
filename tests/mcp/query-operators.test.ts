@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
@@ -43,7 +43,6 @@ function seedTasks(db: Database.Database, vaultPath: string) {
 
     // Write file to disk (needed for vault path consistency)
     const dir = join(vaultPath, 'tasks');
-    const { mkdirSync } = require('node:fs');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(vaultPath, t.file), raw);
 
@@ -222,5 +221,32 @@ describe('query-nodes comparison operators', () => {
     for (const n of nodes) {
       expect(n.fields.status).toBe('todo');
     }
+  });
+
+  it('backwards compatible: omitting operator defaults to eq', async () => {
+    // No operator key → should default to eq
+    const result = await callQuery({
+      schema_type: 'task',
+      filters: [{ field: 'status', value: 'todo' }],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const nodes = parseResult(result);
+    expect(nodes).toHaveLength(2);
+    for (const n of nodes) {
+      expect(n.fields.status).toBe('todo');
+    }
+  });
+
+  it('contains: escapes underscore wildcard', async () => {
+    // _ is a SQL LIKE wildcard matching any single char — must be escaped
+    const result = await callQuery({
+      schema_type: 'task',
+      filters: [{ field: 'status', operator: 'contains', value: '_' }],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const nodes = parseResult(result);
+    expect(nodes).toHaveLength(0);
   });
 });
