@@ -266,9 +266,12 @@ interface MeetingNotesParams {
   body?: string;
 }
 
+type BatchOp = { op: 'create' | 'update' | 'delete' | 'link' | 'unlink'; params: Record<string, unknown> };
+type BatchMutateFn = (params: { operations: BatchOp[] }) => any;
+
 export function createMeetingNotesHandler(
   db: Database.Database,
-  batchMutate: (params: { operations: Array<{ op: string; params: Record<string, unknown> }> }) => any,
+  batchMutate: BatchMutateFn,
   params: MeetingNotesParams,
 ) {
   const { title, date, attendees, project, agenda, body } = params;
@@ -278,7 +281,7 @@ export function createMeetingNotesHandler(
   const resolvedAttendees: string[] = [];
   const createdAttendees: string[] = [];
 
-  const operations: Array<{ op: string; params: Record<string, unknown> }> = [];
+  const operations: BatchOp[] = [];
 
   for (const name of attendees) {
     const nodeId = resolveTargetWithMaps(name, titleMap, pathMap);
@@ -360,7 +363,7 @@ interface ExtractTasksParams {
 
 export function extractTasksHandler(
   db: Database.Database,
-  batchMutate: (params: { operations: Array<{ op: string; params: Record<string, unknown> }> }) => any,
+  batchMutate: BatchMutateFn,
   params: ExtractTasksParams,
 ) {
   const { source_node_id, tasks } = params;
@@ -370,14 +373,14 @@ export function extractTasksHandler(
     .get(source_node_id) as { id: string; title: string | null } | undefined;
   if (!sourceNode) {
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ error: `Source node not found: ${source_node_id}` }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: `Source node not found: ${source_node_id}`, code: 'NOT_FOUND' }) }],
       isError: true,
     };
   }
 
   const sourceTitle = sourceNode.title ?? source_node_id.replace(/\.md$/, '').split('/').pop()!;
 
-  const operations = tasks.map(task => {
+  const operations: BatchOp[] = tasks.map(task => {
     const fields: Record<string, unknown> = {
       ...task.fields,
       source: `[[${sourceTitle}]]`,
@@ -388,7 +391,7 @@ export function extractTasksHandler(
     if (task.priority) fields.priority = task.priority;
 
     return {
-      op: 'create',
+      op: 'create' as const,
       params: {
         title: task.title,
         types: ['task'],
@@ -427,7 +430,10 @@ export function projectStatusHandler(
     'SELECT id, file_path, node_type, title, content_text, content_md, updated_at FROM nodes WHERE id = ?'
   ).get(project_id);
   if (!projectRow) {
-    return { content: [{ type: 'text' as const, text: `Error: Node not found: ${project_id}` }], isError: true };
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: `Node not found: ${project_id}`, code: 'NOT_FOUND' }) }],
+      isError: true,
+    };
   }
 
   const [project] = hydrateNodes([projectRow as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }]);

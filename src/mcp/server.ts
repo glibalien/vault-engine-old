@@ -21,6 +21,21 @@ import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
 
+type ErrorCode = 'NOT_FOUND' | 'VALIDATION_ERROR' | 'CONFLICT' | 'INTERNAL_ERROR';
+
+function toolError(message: string, code: ErrorCode) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ error: message, code }) }],
+    isError: true as const,
+  };
+}
+
+function hasPathTraversal(p: string): boolean {
+  return p.split('/').some(seg => seg === '..' || seg === '.');
+}
+
+export { toolError };
+
 export function createServer(
   db: Database.Database,
   vaultPath: string,
@@ -204,13 +219,10 @@ export function createServer(
 
     // Step 6: Check existence
     if (existsSync(join(vaultPath, relativePath))) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Error: File already exists at ${relativePath}. Use update-node to modify existing nodes or choose a different title.`,
-        }],
-        isError: true,
-      };
+      return toolError(
+        `File already exists at ${relativePath}. Use update-node to modify existing nodes or choose a different title.`,
+        'CONFLICT',
+      );
     }
 
     // Step 7: Write
@@ -243,7 +255,7 @@ export function createServer(
   function createNode(params: Parameters<typeof createNodeInner>[0]) {
     return db.transaction(() => {
       const result = createNodeInner(params);
-      if (!result.isError) resolveReferences(db);
+      if (!('isError' in result)) resolveReferences(db);
       return result;
     })();
   }
@@ -258,34 +270,22 @@ export function createServer(
 
     // Param validation
     if (!fieldUpdates && newBody === undefined && append_body === undefined) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: No updates provided: at least one of fields, body, or append_body is required' }],
-        isError: true,
-      };
+      return toolError('No updates provided: at least one of fields, body, or append_body is required', 'VALIDATION_ERROR');
     }
     if (newBody !== undefined && append_body !== undefined) {
-      return {
-        content: [{ type: 'text' as const, text: 'Error: Cannot provide both body and append_body — they are mutually exclusive' }],
-        isError: true,
-      };
+      return toolError('Cannot provide both body and append_body — they are mutually exclusive', 'VALIDATION_ERROR');
     }
 
     // Check node exists in DB
     const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
     if (!nodeRow) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${node_id}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
 
     // Check file exists on disk
     const absPath = join(vaultPath, node_id);
     if (!existsSync(absPath)) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: File not found on disk: ${node_id}. Database and filesystem are out of sync.` }],
-        isError: true,
-      };
+      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read existing file
@@ -392,7 +392,7 @@ export function createServer(
   function updateNode(params: Parameters<typeof updateNodeInner>[0]) {
     return db.transaction(() => {
       const result = updateNodeInner(params);
-      if (!result.isError) resolveReferences(db);
+      if (!('isError' in result)) resolveReferences(db);
       return result;
     })();
   }
@@ -406,10 +406,7 @@ export function createServer(
       content_text: string; content_md: string | null; updated_at: string;
     } | undefined;
     if (!row) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${nodeId}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${nodeId}`, 'NOT_FOUND');
     }
     const [node] = hydrateNodes([row]);
     return {
@@ -427,18 +424,12 @@ export function createServer(
 
     const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
     if (!nodeRow) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${source_id}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${source_id}`, 'NOT_FOUND');
     }
 
     const absPath = join(vaultPath, source_id);
     if (!existsSync(absPath)) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: File not found on disk: ${source_id}. Database and filesystem are out of sync.` }],
-        isError: true,
-      };
+      return toolError(`File not found on disk: ${source_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read + parse existing file
@@ -528,7 +519,7 @@ export function createServer(
   function addRelationship(params: Parameters<typeof addRelationshipInner>[0]) {
     return db.transaction(() => {
       const result = addRelationshipInner(params);
-      if (!result.isError) resolveReferences(db);
+      if (!('isError' in result)) resolveReferences(db);
       return result;
     })();
   }
@@ -537,18 +528,15 @@ export function createServer(
     'add-relationship',
     'Add a relationship from one node to another. Routes to frontmatter field or body wiki-link based on schema.',
     {
-      source_id: z.string().describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
-      target: z.string().describe('Wiki-link target, e.g. "Alice" or "[[Alice]]"'),
-      rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
+      source_id: z.string().min(1).describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
+      target: z.string().min(1).describe('Wiki-link target, e.g. "Alice" or "[[Alice]]"'),
+      rel_type: z.string().min(1).describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
     },
     async (params) => {
       try {
         return addRelationship(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -567,21 +555,12 @@ export function createServer(
 
     const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
     if (!nodeRow) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${source_id}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${source_id}`, 'NOT_FOUND');
     }
 
     const absPath = join(vaultPath, source_id);
     if (!existsSync(absPath)) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Error: File not found on disk: ${source_id}. Database and filesystem are out of sync.`,
-        }],
-        isError: true,
-      };
+      return toolError(`File not found on disk: ${source_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     const raw = readFileSync(absPath, 'utf-8');
@@ -669,7 +648,7 @@ export function createServer(
   function removeRelationship(params: Parameters<typeof removeRelationshipInner>[0]) {
     return db.transaction(() => {
       const result = removeRelationshipInner(params);
-      if (!result.isError) resolveReferences(db);
+      if (!('isError' in result)) resolveReferences(db);
       return result;
     })();
   }
@@ -678,18 +657,15 @@ export function createServer(
     'remove-relationship',
     'Remove a relationship from one node to another. Inverse of add-relationship. Routes to frontmatter field or body based on schema.',
     {
-      source_id: z.string().describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
-      target: z.string().describe('Wiki-link target to remove, e.g. "Alice" or "[[Alice]]"'),
-      rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
+      source_id: z.string().min(1).describe('Vault-relative file path of the source node, e.g. "tasks/review.md"'),
+      target: z.string().min(1).describe('Wiki-link target to remove, e.g. "Alice" or "[[Alice]]"'),
+      rel_type: z.string().min(1).describe('Relationship type — schema field name for frontmatter, or "wiki-link" for body'),
     },
     async (params) => {
       try {
         return removeRelationship(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -699,21 +675,12 @@ export function createServer(
 
     const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
     if (!nodeRow) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${node_id}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
 
     const absPath = join(vaultPath, node_id);
     if (!existsSync(absPath)) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Error: File not found on disk: ${node_id}. Database and filesystem are out of sync.`,
-        }],
-        isError: true,
-      };
+      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     deleteNodeFile(vaultPath, node_id);
@@ -738,10 +705,7 @@ export function createServer(
     const { operations } = params;
 
     if (!operations || operations.length === 0) {
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'No operations provided' }) }],
-        isError: true,
-      };
+      return toolError('No operations provided', 'VALIDATION_ERROR');
     }
 
     // File snapshot tracking for rollback
@@ -860,7 +824,7 @@ export function createServer(
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ error: message, rolled_back: true }),
+          text: JSON.stringify({ error: message, code: 'INTERNAL_ERROR', rolled_back: true }),
         }],
         isError: true,
       };
@@ -879,22 +843,13 @@ export function createServer(
       | { id: string; title: string }
       | undefined;
     if (!nodeRow) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: Node not found: ${node_id}` }],
-        isError: true,
-      };
+      return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
 
     // Check file exists on disk
     const absPath = join(vaultPath, node_id);
     if (!existsSync(absPath)) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Error: File not found on disk: ${node_id}. Database and filesystem are out of sync.`,
-        }],
-        isError: true,
-      };
+      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read + parse existing file
@@ -922,13 +877,10 @@ export function createServer(
 
     // Check new path doesn't collide (unless same path)
     if (newPath !== node_id && existsSync(join(vaultPath, newPath))) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `Error: File already exists at ${newPath}. Use a different title or provide an explicit new_path.`,
-        }],
-        isError: true,
-      };
+      return toolError(
+        `File already exists at ${newPath}. Use a different title or provide an explicit new_path.`,
+        'CONFLICT',
+      );
     }
 
     // Find referencing files (excluding self)
@@ -1041,19 +993,22 @@ export function createServer(
     'rename-node',
     'Rename a node and update all wiki-link references to it across the vault.',
     {
-      node_id: z.string().describe('Vault-relative file path of the node to rename, e.g. "people/alice.md"'),
-      new_title: z.string().describe('New title for the node'),
-      new_path: z.string().optional()
+      node_id: z.string().min(1).describe('Vault-relative file path of the node to rename, e.g. "people/alice.md"'),
+      new_title: z.string().min(1).describe('New title for the node'),
+      new_path: z.string().min(1).optional()
         .describe('Explicit new file path. If omitted, derived from new_title via schema filename_template.'),
     },
     async (params) => {
+      if (hasPathTraversal(params.node_id)) {
+        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
+      if (params.new_path && hasPathTraversal(params.new_path)) {
+        return toolError('Invalid new_path: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
       try {
         return renameNode(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -1078,23 +1033,23 @@ export function createServer(
     'get-node',
     'Get full details of a specific node by its ID (vault-relative file path)',
     {
-      node_id: z.string().describe('Vault-relative file path, e.g. "tasks/review.md"'),
+      node_id: z.string().min(1).describe('Vault-relative file path, e.g. "tasks/review.md"'),
       include_relationships: z.boolean().optional().default(false)
         .describe('Include incoming and outgoing relationships'),
       include_computed: z.boolean().optional().default(false)
         .describe('Include computed field values from schema definitions'),
     },
     async ({ node_id, include_relationships, include_computed }) => {
+      if (hasPathTraversal(node_id)) {
+        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
       const row = db.prepare(`
         SELECT id, file_path, node_type, title, content_text, content_md, updated_at
         FROM nodes WHERE id = ?
       `).get(node_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
 
       if (!row) {
-        return {
-          content: [{ type: 'text', text: `Error: Node not found: ${node_id}` }],
-          isError: true,
-        };
+        return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
       }
 
       const [node] = hydrateNodes([row], { includeContentMd: true });
@@ -1132,11 +1087,11 @@ export function createServer(
     'get-recent',
     'Get recently created or modified nodes',
     {
-      schema_type: z.string().optional()
+      schema_type: z.string().min(1).optional()
         .describe('Filter by schema type, e.g. "task", "meeting"'),
-      since: z.string().optional()
+      since: z.string().min(1).optional()
         .describe('ISO date — only return nodes updated after this time'),
-      limit: z.number().optional().default(20)
+      limit: z.number().int().min(1).optional().default(20)
         .describe('Maximum number of results (default 20)'),
     },
     async ({ schema_type, since, limit }) => {
@@ -1176,12 +1131,12 @@ export function createServer(
     'query-nodes',
     'Search for nodes by type, field values, and/or full text. At least one of schema_type, full_text, or filters is required.',
     {
-      schema_type: z.string().optional()
+      schema_type: z.string().min(1).optional()
         .describe('Schema type to filter by, e.g. "task", "project", "meeting"'),
-      full_text: z.string().optional()
+      full_text: z.string().min(1).optional()
         .describe('Full-text search query (FTS5 syntax: supports "quoted phrases", prefix*, AND/OR)'),
       filters: z.array(z.object({
-        field: z.string().describe('Field name, e.g. "status", "assignee"'),
+        field: z.string().min(1).describe('Field name, e.g. "status", "assignee"'),
         operator: z.enum(['eq', 'neq', 'gt', 'lt', 'gte', 'lte', 'contains', 'in'])
           .default('eq')
           .describe('Comparison operator'),
@@ -1189,17 +1144,14 @@ export function createServer(
           .describe('Value to compare against (use array for "in" operator)'),
       })).optional()
         .describe('Field filters with comparison operators'),
-      limit: z.number().optional().default(20)
+      limit: z.number().int().min(1).optional().default(20)
         .describe('Maximum number of results (default 20)'),
-      order_by: z.string().optional()
+      order_by: z.string().min(1).optional()
         .describe('Sort field + direction, e.g. "updated_at DESC", "due_date ASC". Default: updated_at DESC (or FTS rank when full_text is used)'),
     },
     async ({ schema_type, full_text, filters, limit, order_by }) => {
       if (!schema_type && !full_text && (!filters || filters.length === 0)) {
-        return {
-          content: [{ type: 'text', text: 'Error: At least one of schema_type, full_text, or filters is required' }],
-          isError: true,
-        };
+        return toolError('At least one of schema_type, full_text, or filters is required', 'VALIDATION_ERROR');
       }
 
       try {
@@ -1316,10 +1268,7 @@ export function createServer(
         const nodes = hydrateNodes(rows);
         return { content: [{ type: 'text', text: JSON.stringify(nodes) }] };
       } catch (err) {
-        return {
-          content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -1346,15 +1295,12 @@ export function createServer(
     'describe-schema',
     'Get the full definition of a schema including inherited fields, field types, and constraints',
     {
-      schema_name: z.string().describe('Schema name, e.g. "task", "work-task"'),
+      schema_name: z.string().min(1).describe('Schema name, e.g. "task", "work-task"'),
     },
     async ({ schema_name }) => {
       const schema = getSchema(db, schema_name);
       if (!schema) {
-        return {
-          content: [{ type: 'text', text: `Error: Schema not found: ${schema_name}` }],
-          isError: true,
-        };
+        return toolError(`Schema not found: ${schema_name}`, 'NOT_FOUND');
       }
       return { content: [{ type: 'text', text: JSON.stringify(schema) }] };
     },
@@ -1364,19 +1310,16 @@ export function createServer(
     'validate-node',
     'Validate a node against its schemas. Provide node_id for an existing node, or types + fields for hypothetical validation.',
     {
-      node_id: z.string().optional()
+      node_id: z.string().min(1).optional()
         .describe('Validate an existing node by its ID (vault-relative path)'),
-      types: z.array(z.string()).optional()
+      types: z.array(z.string().min(1)).optional()
         .describe('Schema types for hypothetical validation, e.g. ["task", "meeting"]'),
       fields: z.record(z.string(), z.unknown()).optional()
         .describe('Field values for hypothetical validation, e.g. { "status": "todo" }'),
     },
     async ({ node_id, types, fields: hypotheticalFields }) => {
       if (!node_id && !types) {
-        return {
-          content: [{ type: 'text', text: 'Error: Provide node_id or types (with optional fields)' }],
-          isError: true,
-        };
+        return toolError('Provide node_id or types (with optional fields)', 'VALIDATION_ERROR');
       }
 
       let nodeTypes: string[];
@@ -1385,10 +1328,7 @@ export function createServer(
       if (node_id) {
         const loaded = loadNodeForValidation(node_id);
         if (!loaded) {
-          return {
-            content: [{ type: 'text', text: `Error: Node not found: ${node_id}` }],
-            isError: true,
-          };
+          return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
         }
         nodeTypes = loaded.types;
         fieldEntries = loaded.fields;
@@ -1431,29 +1371,29 @@ export function createServer(
     'create-node',
     'Create a new node as a markdown file with frontmatter. Validates against schemas, writes to disk, and indexes.',
     {
-      title: z.string().describe('Node title (required)'),
+      title: z.string().min(1).describe('Node title (required)'),
       types: z.array(z.string()).optional().default([])
         .describe('Schema types, e.g. ["task"] or ["task", "meeting"]'),
       fields: z.record(z.string(), z.unknown()).optional().default({})
         .describe('Field values, e.g. { "status": "todo", "assignee": "[[Bob]]" }'),
       body: z.string().optional()
         .describe('Markdown body content'),
-      parent_path: z.string().optional()
+      parent_path: z.string().min(1).optional()
         .describe('Override path: file created at <parent_path>/<title>.md instead of schema template'),
       relationships: z.array(z.object({
-        target: z.string().describe('Wiki-link target, e.g. "Bob" or "[[Bob]]"'),
-        rel_type: z.string().describe('Relationship type — schema field name for frontmatter, or appended to body'),
+        target: z.string().min(1).describe('Wiki-link target, e.g. "Bob" or "[[Bob]]"'),
+        rel_type: z.string().min(1).describe('Relationship type — schema field name for frontmatter, or appended to body'),
       })).optional().default([])
         .describe('Relationships to create with the node'),
     },
     async (params) => {
+      if (params.parent_path && hasPathTraversal(params.parent_path)) {
+        return toolError('Invalid parent_path: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
       try {
         return createNode(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -1462,7 +1402,7 @@ export function createServer(
     'update-node',
     'Update an existing node\'s fields and/or body content. Fields are merged (not replaced); set a field to null to remove it.',
     {
-      node_id: z.string().describe('Vault-relative file path of the node to update, e.g. "tasks/review.md"'),
+      node_id: z.string().min(1).describe('Vault-relative file path of the node to update, e.g. "tasks/review.md"'),
       fields: z.record(z.string(), z.unknown()).optional()
         .describe('Fields to update (merged with existing). Set a value to null to remove a field.'),
       body: z.string().optional()
@@ -1471,13 +1411,13 @@ export function createServer(
         .describe('Append to existing body content'),
     },
     async (params) => {
+      if (hasPathTraversal(params.node_id)) {
+        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
       try {
         return updateNode(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -1497,10 +1437,7 @@ export function createServer(
       try {
         return batchMutate(params);
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
@@ -1509,14 +1446,14 @@ export function createServer(
     'semantic-search',
     'Search by semantic similarity with optional type and field filters',
     {
-      query: z.string().describe('Natural language search query'),
-      schema_type: z.string().optional().describe('Filter results by schema type'),
+      query: z.string().min(1).describe('Natural language search query'),
+      schema_type: z.string().min(1).optional().describe('Filter results by schema type'),
       filters: z.array(z.object({
-        field: z.string(),
+        field: z.string().min(1),
         operator: z.literal('eq'),
         value: z.string(),
       })).optional().describe('Field equality filters'),
-      limit: z.number().optional().describe('Max results (default 10)'),
+      limit: z.number().int().min(1).optional().describe('Max results (default 10)'),
       include_chunks: z.boolean().optional().describe('Include matching chunk text'),
     },
     async ({ query, schema_type, filters, limit, include_chunks }) => {
@@ -1542,9 +1479,7 @@ export function createServer(
           }],
         };
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Semantic search failed: ${err instanceof Error ? err.message : String(err)}` }],
-        };
+        return toolError(`Semantic search failed: ${err instanceof Error ? err.message : String(err)}`, 'INTERNAL_ERROR');
       }
     },
   );
@@ -1553,18 +1488,21 @@ export function createServer(
     'traverse-graph',
     'Traverse the relationship graph from a starting node. Returns connected nodes within N hops, with edges showing how they are connected. Use direction to control whether to follow outgoing links, incoming links, or both.',
     {
-      node_id: z.string()
+      node_id: z.string().min(1)
         .describe("ID of the starting node (vault-relative path, e.g. 'projects/acme.md')"),
       direction: z.enum(['outgoing', 'incoming', 'both']).default('both')
         .describe("'outgoing': follow links FROM this node. 'incoming': follow links TO this node. 'both': follow both."),
-      rel_types: z.array(z.string()).optional()
+      rel_types: z.array(z.string().min(1)).optional()
         .describe("Only traverse these relationship types, e.g. ['assignee', 'source']. Omit for all types."),
-      target_types: z.array(z.string()).optional()
+      target_types: z.array(z.string().min(1)).optional()
         .describe("Filter result nodes to those with at least one of these schema types. Does NOT affect traversal — all nodes are explored, but only matching types appear in the response."),
-      max_depth: z.number().default(2)
+      max_depth: z.number().int().min(1).max(10).default(2)
         .describe("Maximum hops from the starting node (1-10). Default 2."),
     },
     async ({ node_id, direction, rel_types, target_types, max_depth }) => {
+      if (hasPathTraversal(node_id)) {
+        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
       try {
         const result = traverseGraph(db, {
           node_id,
@@ -1616,10 +1554,12 @@ export function createServer(
           }],
         };
       } catch (err) {
-        return {
-          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
-          isError: true,
-        };
+        const msg = err instanceof Error ? err.message : String(err);
+        // traverse-graph throws "Node not found:" for missing nodes
+        if (msg.startsWith('Node not found:')) {
+          return toolError(msg, 'NOT_FOUND');
+        }
+        return toolError(msg, 'INTERNAL_ERROR');
       }
     },
   );
