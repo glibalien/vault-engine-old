@@ -1181,10 +1181,13 @@ export function createServer(
         .describe('Full-text search query (FTS5 syntax: supports "quoted phrases", prefix*, AND/OR)'),
       filters: z.array(z.object({
         field: z.string().describe('Field name, e.g. "status", "assignee"'),
-        operator: z.enum(['eq']).describe('Comparison operator: eq (equals)'),
-        value: z.string().describe('Value to compare against'),
+        operator: z.enum(['eq', 'neq', 'gt', 'lt', 'gte', 'lte', 'contains', 'in'])
+          .default('eq')
+          .describe('Comparison operator'),
+        value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+          .describe('Value to compare against (use array for "in" operator)'),
       })).optional()
-        .describe('Field equality filters'),
+        .describe('Field filters with comparison operators'),
       limit: z.number().optional().default(20)
         .describe('Maximum number of results (default 20)'),
       order_by: z.string().optional()
@@ -1228,13 +1231,50 @@ export function createServer(
           params.push(schema_type);
         }
 
-        // Field equality filters
+        // Field filters with comparison operators
         if (filters) {
           for (let i = 0; i < filters.length; i++) {
+            const { field, operator, value } = filters[i];
             const alias = `f${i}`;
             joins.push(`JOIN fields ${alias} ON ${alias}.node_id = n.id`);
-            conditions.push(`${alias}.key = ? AND ${alias}.value_text = ?`);
-            params.push(filters[i].field, filters[i].value);
+
+            switch (operator) {
+              case 'eq':
+                conditions.push(`${alias}.key = ? AND ${alias}.value_text = ?`);
+                params.push(field, String(value));
+                break;
+              case 'neq':
+                conditions.push(`${alias}.key = ? AND ${alias}.value_text != ?`);
+                params.push(field, String(value));
+                break;
+              case 'gt':
+              case 'lt':
+              case 'gte':
+              case 'lte': {
+                const sqlOp = { gt: '>', lt: '<', gte: '>=', lte: '<=' }[operator];
+                conditions.push(
+                  `${alias}.key = ? AND CASE ${alias}.value_type ` +
+                  `WHEN 'number' THEN ${alias}.value_number ${sqlOp} ? ` +
+                  `WHEN 'date' THEN ${alias}.value_date ${sqlOp} ? ` +
+                  `ELSE ${alias}.value_text ${sqlOp} ? END`,
+                );
+                params.push(field, value, value, value);
+                break;
+              }
+              case 'contains': {
+                const escaped = String(value).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+                conditions.push(`${alias}.key = ? AND ${alias}.value_text LIKE '%' || ? || '%' ESCAPE '\\'`);
+                params.push(field, escaped);
+                break;
+              }
+              case 'in': {
+                const vals = Array.isArray(value) ? value : [value];
+                const placeholders = vals.map(() => '?').join(', ');
+                conditions.push(`${alias}.key = ? AND ${alias}.value_text IN (${placeholders})`);
+                params.push(field, ...vals.map(String));
+                break;
+              }
+            }
           }
         }
 
