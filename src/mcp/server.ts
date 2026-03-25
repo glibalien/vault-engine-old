@@ -16,7 +16,7 @@ import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
-import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler } from './workflow-tools.js';
+import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler, extractTasksHandler } from './workflow-tools.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1660,6 +1660,25 @@ export function createServer(
     },
     async (params) => {
       return createMeetingNotesHandler(db, batchMutate, hydrateNodes, params);
+    },
+  );
+
+  server.tool(
+    'extract-tasks',
+    'Create task nodes from pre-extracted action items and link them back to the source node. The agent identifies action items; this tool orchestrates creation via batch-mutate.',
+    {
+      source_node_id: z.string().min(1).describe('Node ID the tasks were extracted from'),
+      tasks: z.array(z.object({
+        title: z.string().min(1).describe('Task title'),
+        assignee: z.string().optional().describe('Person name or wiki-link'),
+        due_date: z.string().optional().describe('ISO date'),
+        priority: z.string().optional().describe('e.g. high, medium, low'),
+        status: z.string().optional().describe('Defaults to "todo"'),
+        fields: z.record(z.string(), z.unknown()).optional().describe('Additional fields'),
+      })).min(1).describe('Pre-extracted task definitions'),
+    },
+    async (params) => {
+      return extractTasksHandler(db, batchMutate, params);
     },
   );
 

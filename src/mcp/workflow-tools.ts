@@ -345,6 +345,77 @@ export function createMeetingNotesHandler(
   };
 }
 
+interface TaskInput {
+  title: string;
+  assignee?: string;
+  due_date?: string;
+  priority?: string;
+  status?: string;
+  fields?: Record<string, unknown>;
+}
+
+interface ExtractTasksParams {
+  source_node_id: string;
+  tasks: TaskInput[];
+}
+
+export function extractTasksHandler(
+  db: Database.Database,
+  batchMutate: (params: { operations: Array<{ op: string; params: Record<string, unknown> }> }) => any,
+  params: ExtractTasksParams,
+) {
+  const { source_node_id, tasks } = params;
+
+  // Validate source exists
+  const sourceNode = db.prepare('SELECT id, title FROM nodes WHERE id = ?')
+    .get(source_node_id) as { id: string; title: string | null } | undefined;
+  if (!sourceNode) {
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ error: `Source node not found: ${source_node_id}` }) }],
+      isError: true,
+    };
+  }
+
+  const sourceTitle = sourceNode.title ?? source_node_id.replace(/\.md$/, '').split('/').pop()!;
+
+  const operations = tasks.map(task => {
+    const fields: Record<string, unknown> = {
+      ...task.fields,
+      source: `[[${sourceTitle}]]`,
+      status: task.status ?? 'todo',
+    };
+    if (task.assignee) fields.assignee = task.assignee;
+    if (task.due_date) fields.due_date = task.due_date;
+    if (task.priority) fields.priority = task.priority;
+
+    return {
+      op: 'create',
+      params: {
+        title: task.title,
+        types: ['task'],
+        fields,
+      },
+    };
+  });
+
+  const result = batchMutate({ operations });
+  const parsed = JSON.parse(result.content[0].text);
+
+  if (result.isError || parsed.error) {
+    return result;
+  }
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        tasks: parsed.results,
+        warnings: parsed.warnings,
+      }),
+    }],
+  };
+}
+
 export function projectStatusHandler(
   db: Database.Database,
   hydrateNodes: HydrateNodes,
