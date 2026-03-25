@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HydrateNodes = (rows: any[], opts?: any) => any[];
 
 interface TaskSummary {
   id: string;
@@ -113,5 +115,34 @@ export function computeProjectTaskStats(
     tasks_by_status: tasksByStatus,
     overdue_tasks: overdueTasks,
     recent_activity: recentActivity,
+  };
+}
+
+export function projectStatusHandler(
+  db: Database.Database,
+  hydrateNodes: HydrateNodes,
+  params: { project_id: string },
+) {
+  const { project_id } = params;
+
+  // Verify project exists
+  const projectRow = db.prepare(
+    'SELECT id, file_path, node_type, title, content_text, content_md, updated_at FROM nodes WHERE id = ?'
+  ).get(project_id);
+  if (!projectRow) {
+    return { content: [{ type: 'text' as const, text: `Error: Node not found: ${project_id}` }], isError: true };
+  }
+
+  const [project] = hydrateNodes([projectRow as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }]);
+  const stats = computeProjectTaskStats(db, project_id);
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        project,
+        ...stats,
+      }),
+    }],
   };
 }

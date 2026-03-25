@@ -16,6 +16,7 @@ import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
+import { projectStatusHandler } from './workflow-tools.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1620,6 +1621,17 @@ export function createServer(
           isError: true,
         };
       }
+    },
+  );
+
+  server.tool(
+    'project-status',
+    'Get detailed status of a project: task counts, completion percentage, tasks grouped by status, overdue tasks, recent activity.',
+    {
+      project_id: z.string().min(1).describe('Project node ID (vault-relative path)'),
+    },
+    async ({ project_id }) => {
+      return projectStatusHandler(db, hydrateNodes, { project_id });
     },
   );
 
