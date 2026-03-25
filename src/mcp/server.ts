@@ -15,6 +15,7 @@ import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, dele
 import { indexFile, deleteFile } from '../sync/indexer.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
+import { traverseGraph } from '../graph/index.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1498,6 +1499,81 @@ export function createServer(
       } catch (err) {
         return {
           content: [{ type: 'text' as const, text: `Semantic search failed: ${err instanceof Error ? err.message : String(err)}` }],
+        };
+      }
+    },
+  );
+
+  server.tool(
+    'traverse-graph',
+    'Traverse the relationship graph from a starting node. Returns connected nodes within N hops, with edges showing how they are connected. Use direction to control whether to follow outgoing links, incoming links, or both.',
+    {
+      node_id: z.string()
+        .describe("ID of the starting node (vault-relative path, e.g. 'projects/acme.md')"),
+      direction: z.enum(['outgoing', 'incoming', 'both']).default('both')
+        .describe("'outgoing': follow links FROM this node. 'incoming': follow links TO this node. 'both': follow both."),
+      rel_types: z.array(z.string()).optional()
+        .describe("Only traverse these relationship types, e.g. ['assignee', 'source']. Omit for all types."),
+      target_types: z.array(z.string()).optional()
+        .describe("Filter result nodes to those with at least one of these schema types. Does NOT affect traversal — all nodes are explored, but only matching types appear in the response."),
+      max_depth: z.number().default(2)
+        .describe("Maximum hops from the starting node (1-10). Default 2."),
+    },
+    async ({ node_id, direction, rel_types, target_types, max_depth }) => {
+      try {
+        const result = traverseGraph(db, {
+          node_id,
+          direction,
+          rel_types,
+          target_types,
+          max_depth,
+        });
+
+        // Hydrate root
+        const rootRow = db.prepare(
+          'SELECT id, file_path, node_type, title, content_text, content_md, updated_at FROM nodes WHERE id = ?'
+        ).get(result.root_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string };
+        const [hydratedRoot] = hydrateNodes([rootRow]);
+
+        // Hydrate discovered nodes
+        let hydratedNodes: Array<Record<string, unknown>> = [];
+        if (result.node_ids.length > 0) {
+          const ids = result.node_ids.map(n => n.id);
+          const nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }> = [];
+          for (let i = 0; i < ids.length; i += 500) {
+            const chunk = ids.slice(i, i + 500);
+            const placeholders = chunk.map(() => '?').join(',');
+            const rows = db.prepare(
+              `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+               FROM nodes WHERE id IN (${placeholders})`
+            ).all(...chunk) as typeof nodeRows;
+            nodeRows.push(...rows);
+          }
+
+          const hydrated = hydrateNodes(nodeRows);
+
+          // Attach depth to each hydrated node
+          const depthMap = new Map(result.node_ids.map(n => [n.id, n.depth]));
+          hydratedNodes = hydrated.map(n => ({
+            ...n,
+            depth: depthMap.get(n.id as string) ?? 0,
+          }));
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              root: hydratedRoot,
+              nodes: hydratedNodes,
+              edges: result.edges,
+            }),
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
         };
       }
     },

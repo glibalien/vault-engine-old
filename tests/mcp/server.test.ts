@@ -600,4 +600,58 @@ describe('MCP server', () => {
       expect(workTask.field_count).toBe(7); // 4 inherited + project, department, billable
     });
   });
+
+  describe('traverse-graph', () => {
+    it('returns hydrated nodes with depth and edges', async () => {
+      indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+      indexFixture(db, 'sample-person.md', 'people/alice.md');
+      const { resolveReferences } = await import('../../src/sync/resolver.js');
+      resolveReferences(db);
+
+      const result = await client.callTool({
+        name: 'traverse-graph',
+        arguments: {
+          node_id: 'meetings/q1.md',
+          direction: 'outgoing',
+          max_depth: 1,
+        },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const parsed = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+
+      // Root should be hydrated with title
+      expect(parsed.root.id).toBe('meetings/q1.md');
+      expect(parsed.root.title).toBe('Q1 Planning Meeting');
+      expect(parsed.root.types).toContain('meeting');
+      // Nodes should have depth
+      expect(parsed.nodes.length).toBeGreaterThan(0);
+      for (const n of parsed.nodes) {
+        expect(n.depth).toBe(1);
+        expect(n.title).toBeTruthy();
+        expect(n.types).toBeDefined();
+        expect(n.fields).toBeDefined();
+      }
+      // Edges should have full shape
+      for (const e of parsed.edges) {
+        expect(e.source_id).toBeTruthy();
+        expect(e.target_id).toBeTruthy();
+        expect(e.resolved_target_id).toBeTruthy();
+        expect(e.rel_type).toBeTruthy();
+        expect('context' in e).toBe(true);
+      }
+    });
+
+    it('returns error for nonexistent node', async () => {
+      const result = await client.callTool({
+        name: 'traverse-graph',
+        arguments: { node_id: 'nonexistent.md' },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as Array<{ text: string }>)[0].text;
+      expect(text).toContain('Node not found');
+    });
+  });
 });
