@@ -77,16 +77,29 @@ Full-text search over indexed content.
 
 ### MCP Layer (`src/mcp/`)
 
-MCP server exposing read-only query tools over the indexed vault.
+MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
-- **`server.ts`** — `createServer(db)` creates an `McpServer` with 7 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), and `inferFieldType` (JS value → `FieldValueType`) helpers.
+- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 19 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
-  - **`get-node`** — Returns full node details by ID (vault-relative path). Optional `include_relationships` flag.
+  - **`get-node`** — Returns full node details by ID (vault-relative path). Optional `include_relationships` and `include_computed` flags.
   - **`get-recent`** — Returns nodes ordered by `updated_at DESC`. Optional `schema_type` and `since` filters.
-  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (equality), `order_by`, and `limit`. Dynamic SQL construction with bound parameters.
+  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `order_by`, and `limit`. Dynamic SQL construction with bound parameters.
   - **`list-schemas`** — No params. Returns schema summaries (name, display_name, icon, extends, ancestors, field_count) from the `schemas` table. Distinct from `list-types` (indexed data vs YAML definitions).
   - **`describe-schema`** — Returns full `ResolvedSchema` by name, including inherited fields.
   - **`validate-node`** — Two modes: by `node_id` (loads from DB) or hypothetical (`types: string[]` + `fields`). Runs `mergeSchemaFields` + `validateNode` pipeline.
+  - **`create-node`** — Creates a new markdown file with frontmatter. Validates schemas, generates path, writes file, indexes.
+  - **`update-node`** — Updates fields/body of existing node. Merge semantics for fields, replace/append for body.
+  - **`add-relationship`** — Adds wiki-link reference between nodes (field or body).
+  - **`remove-relationship`** — Removes wiki-link reference between nodes.
+  - **`rename-node`** — Renames a node and updates all incoming references across the vault.
+  - **`batch-mutate`** — Atomic batch of create/update/delete/link/unlink operations with filesystem rollback.
+  - **`semantic-search`** — Vector similarity search using embeddings (requires embedding config).
+  - **`traverse-graph`** — N-hop BFS graph traversal with direction/type/depth controls.
+  - **`daily-summary`** — Dashboard: overdue tasks, due today/this week, recent activity, active project stats.
+  - **`project-status`** — Full project details with task breakdown by status, completion %, overdue tasks.
+  - **`create-meeting-notes`** — Creates meeting node, auto-resolves/creates attendee nodes via batch-mutate.
+  - **`extract-tasks`** — Creates task nodes from a source node with back-references via batch-mutate.
+- **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
 
 ### Entry Point (`src/index.ts`)
 
