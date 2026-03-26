@@ -881,8 +881,15 @@ export function createServer(
       existingFields[key] = value;
     }
 
-    // Derive new path
-    const newPath = explicitNewPath ?? generateFilePath(new_title, types, existingFields, db);
+    // Derive new path — preserve original directory when no explicit path given
+    let newPath: string;
+    if (explicitNewPath) {
+      newPath = explicitNewPath;
+    } else {
+      const generated = generateFilePath(new_title, types, existingFields, db);
+      const originalDir = node_id.includes('/') ? node_id.slice(0, node_id.lastIndexOf('/')) : '';
+      newPath = originalDir ? `${originalDir}/${generated}` : generated;
+    }
 
     // Check new path doesn't collide (unless same path)
     if (newPath !== node_id && existsSync(join(vaultPath, newPath))) {

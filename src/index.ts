@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { openDatabase, createSchema } from './db/index.js';
 import { createServer } from './mcp/server.js';
 import { loadSchemas } from './schema/index.js';
+import { incrementalIndex } from './sync/index.js';
 import { loadVecExtension, createVecTable, getVecDimensions, dropVecTable, createProvider, startEmbeddingWorker } from './embeddings/index.js';
 import type { EmbeddingConfig } from './embeddings/types.js';
 
@@ -53,6 +54,10 @@ if (embeddingConfig) {
   createVecTable(db, provider.dimensions);
   startEmbeddingWorker(db, provider, { batchSize: embeddingConfig.batchSize });
 }
+
+// Index vault on startup (incremental — fast if DB already populated)
+const indexResult = incrementalIndex(db, vaultPath);
+console.error(`[vault-engine] indexed ${indexResult.indexed}, skipped ${indexResult.skipped}, deleted ${indexResult.deleted}`);
 
 const server = createServer(db, vaultPath, embeddingConfig ? { embeddingConfig } : undefined);
 const transport = new StdioServerTransport();

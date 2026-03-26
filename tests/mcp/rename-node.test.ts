@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
@@ -284,6 +284,22 @@ describe('rename-node', () => {
 
     const content = readFileSync(join(vaultPath, 'Task.md'), 'utf-8');
     expect(content).toContain('[[Alice Smith]]');
+  });
+
+  it('preserves original directory when no new_path provided', async () => {
+    mkdirSync(join(vaultPath, 'Daily Notes'), { recursive: true });
+    await createTestNode({ title: 'Old Title', parent_path: 'Daily Notes' });
+
+    const result = await callRename({ node_id: 'Daily Notes/Old Title.md', new_title: 'New Title' });
+    expect(result.isError).toBeUndefined();
+    const parsed = parseResult(result);
+
+    expect(parsed.new_path).toBe('Daily Notes/New Title.md');
+    expect(existsSync(join(vaultPath, 'Daily Notes/New Title.md'))).toBe(true);
+    expect(existsSync(join(vaultPath, 'Daily Notes/Old Title.md'))).toBe(false);
+
+    const content = readFileSync(join(vaultPath, 'Daily Notes/New Title.md'), 'utf-8');
+    expect(content).toContain('title: New Title');
   });
 
   it('moves file without changing title when only new_path provided', async () => {
