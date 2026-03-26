@@ -1656,10 +1656,8 @@ export function createServer(
 
       if (analysis.types.length === 0) {
         if (types && types.length > 0) {
-          const foundNames = new Set(analysis.types.map(t => t.name));
-          const missing = types.find(t => !foundNames.has(t));
           return toolError(
-            `Type '${missing ?? types[0]}' not found in indexed data.`,
+            `Type '${types[0]}' not found in indexed data.`,
             'NOT_FOUND',
           );
         }

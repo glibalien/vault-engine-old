@@ -280,25 +280,31 @@ export function analyzeVault(db: Database.Database, types?: string[]): Inference
   }
 
   // 7. Shared field detection: find fields with same key and same inferred_type across 2+ types
-  const fieldTypeOccurrences = new Map<string, Set<string>>(); // "key:type" -> Set<typeName>
+  // Nested map: fieldKey → inferredType → Set<typeName>
+  const fieldTypeOccurrences = new Map<string, Map<string, Set<string>>>();
   for (const [typeName, fieldMap] of typeFieldMap) {
     for (const [fieldKey, inferredType] of fieldMap) {
-      const compositeKey = `${fieldKey}:${inferredType}`;
-      const typeSet = fieldTypeOccurrences.get(compositeKey) ?? new Set();
+      let byType = fieldTypeOccurrences.get(fieldKey);
+      if (!byType) {
+        byType = new Map();
+        fieldTypeOccurrences.set(fieldKey, byType);
+      }
+      const typeSet = byType.get(inferredType) ?? new Set();
       typeSet.add(typeName);
-      fieldTypeOccurrences.set(compositeKey, typeSet);
+      byType.set(inferredType, typeSet);
     }
   }
 
   // Collect shared field keys per type
   const sharedFieldsByType = new Map<string, Set<string>>();
-  for (const [compositeKey, typeNames] of fieldTypeOccurrences) {
-    if (typeNames.size >= 2) {
-      const fieldKey = compositeKey.split(':')[0];
-      for (const typeName of typeNames) {
-        const sharedSet = sharedFieldsByType.get(typeName) ?? new Set();
-        sharedSet.add(fieldKey);
-        sharedFieldsByType.set(typeName, sharedSet);
+  for (const [fieldKey, byType] of fieldTypeOccurrences) {
+    for (const typeNames of byType.values()) {
+      if (typeNames.size >= 2) {
+        for (const typeName of typeNames) {
+          const sharedSet = sharedFieldsByType.get(typeName) ?? new Set();
+          sharedSet.add(fieldKey);
+          sharedFieldsByType.set(typeName, sharedSet);
+        }
       }
     }
   }
