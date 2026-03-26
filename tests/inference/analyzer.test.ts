@@ -239,7 +239,7 @@ describe('analyzeVault', () => {
     // 'source' field is in the data but not in the schema
     const sourceDiscrepancy = task.discrepancies.find(d => d.field === 'source');
     expect(sourceDiscrepancy).toBeDefined();
-    expect(sourceDiscrepancy!.issue).toContain('not in schema');
+    expect(sourceDiscrepancy!.issue).toContain('not defined in schema');
   });
 
   it('detects shared fields across types', () => {

@@ -206,7 +206,7 @@ export function analyzeVault(db: Database.Database, types?: string[]): Inference
         if (!(field.key in schemaFields)) {
           discrepancies.push({
             field: field.key,
-            issue: `Field '${field.key}' found in data but not in schema`,
+            issue: `Field '${field.key}' exists in ${Math.round(field.frequency * 100)}% of nodes but is not defined in schema`,
             schema_value: undefined,
             inferred_value: field.inferred_type,
           });
