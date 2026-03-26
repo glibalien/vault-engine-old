@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 vault-engine is a local-first, MCP-native knowledge graph engine that indexes markdown vaults into SQLite for structured querying. Markdown files are canonical — the database is a derived, rebuildable index. The agent (via MCP tools) is the primary interface; editors are viewports.
 
-See `vault-engine-architecture.md` for the full architecture and `docs/phase-1-overview.md` for current implementation status.
+See `vault-engine-architecture.md` for the full architecture, `docs/phase-1-overview.md` for current implementation status, and `vault-engine-enhancements.md` for the post-Phase 6 roadmap.
 
 ## Commands
 
@@ -103,7 +103,7 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
 ### Entry Point (`src/index.ts`)
 
-Opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, starts MCP server over stdio transport.
+Opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts MCP server over stdio transport. Embedding config loaded from `.vault-engine/config.json` if present.
 
 ### Schema Layer (`src/schema/`)
 
