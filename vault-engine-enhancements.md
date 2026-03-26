@@ -1,35 +1,6 @@
 # Vault Engine — Enhancements & Roadmap
 
-Post-Phase 6 enhancements, bugs found during initial testing, and priority sequencing. This document covers everything beyond the core engine (Phases 1–6).
-
----
-
-## Bugs & Fixes Found During Testing
-
-### B1: `rename-node` drops file into vault root
-
-When `new_path` is omitted and the node's type has no schema or no `filename_template`, the renamed file ends up in the vault root instead of staying in its current directory. The fallback should preserve the original file's directory: `Daily Notes/old title.md` renamed to `new title` should become `Daily Notes/new title.md`, not `new title.md`.
-
-**Fix:** When `new_path` is not provided and `generateFilePath` can't resolve a template, use `path.dirname(oldPath)` as the base directory.
-
-### B2: Serializer uses inline YAML array syntax
-
-The serializer produces `types: [person]` instead of the multi-line list style used by the rest of the vault:
-
-```yaml
-types:
-  - person
-```
-
-Both parse correctly and render fine in Obsidian. Cosmetic issue — fix if visual consistency matters.
-
-### B3: Schema enum values don't match actual vault data
-
-The shipped `.schemas/task.yaml` defines hardcoded enum values from the architecture doc examples (e.g., `status: [todo, in-progress, blocked, done, cancelled]`, `priority: [critical, high, medium, low]`) rather than values derived from the actual vault (e.g., `open`, `normal`). Validation correctly warns but doesn't reject — this is working as designed, but the schemas need updating to match reality.
-
-**Fix:** Run the schema inference tool (Enhancement #1 below) or manually update `.schemas/*.yaml` to reflect actual frontmatter values.
-
----
+Post-Phase 6 enhancements, and priority sequencing. This document covers everything beyond the core engine (Phases 1–6).
 
 ## Enhancements
 
