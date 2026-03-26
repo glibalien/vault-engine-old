@@ -79,7 +79,7 @@ Full-text search over indexed content.
 
 MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
-- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 19 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
+- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 20 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
   - **`get-node`** — Returns full node details by ID (vault-relative path). Optional `include_relationships` and `include_computed` flags.
   - **`get-recent`** — Returns nodes ordered by `updated_at DESC`. Optional `schema_type` and `since` filters.
@@ -99,7 +99,17 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
   - **`project-status`** — Full project details with task breakdown by status, completion %, overdue tasks.
   - **`create-meeting-notes`** — Creates meeting node, auto-resolves/creates attendee nodes via batch-mutate.
   - **`extract-tasks`** — Creates task nodes from a source node with back-references via batch-mutate.
+  - **`infer-schemas`** — Analyzes indexed vault data to infer schema definitions. Reports field types, frequencies, enum candidates, discrepancies against existing schemas, and shared fields across types. Three modes: report (analysis only), merge (expand existing schemas with inferred data), overwrite (replace schemas entirely).
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
+
+### Inference Layer (`src/inference/`)
+
+Schema inference from indexed vault data.
+
+- **`types.ts`** — `InferredField`, `TypeAnalysis`, `Discrepancy`, `InferenceResult`, `InferenceMode`.
+- **`analyzer.ts`** — `inferFieldType(rows)` infers `SchemaFieldType` per field with priority-ordered type detection (reference > date > number > boolean > list > string-ref > enum > string). `analyzeVault(db, types?)` queries `fields` + `node_types` tables, computes frequencies, detects discrepancies against existing schemas, identifies shared fields across types.
+- **`generator.ts`** — `generateSchemas(analysis, mode, existingSchemas)` produces `SchemaDefinition[]` based on mode. `writeSchemaFiles(schemas, vaultPath)` serializes to `.schemas/*.yaml`. Merge mode preserves existing fields/properties and unions enum values. Overwrite mode produces clean schemas from data.
+- **`index.ts`** — Re-exports all types and functions.
 
 ### Entry Point (`src/index.ts`)
 
