@@ -242,11 +242,24 @@ export function analyzeVault(db: Database.Database, types?: string[]): Inference
           if (schemaType === 'enum' && field.inferred_type === 'enum') {
             const schemaValues = schemaFields[field.key].values ?? [];
             const inferredValues = field.enum_values ?? [];
+
+            // Values in data but not in schema
             const extraValues = inferredValues.filter(v => !schemaValues.includes(v));
             if (extraValues.length > 0) {
               discrepancies.push({
                 field: field.key,
                 issue: `Enum values in data but not in schema: ${extraValues.join(', ')}`,
+                schema_value: schemaValues,
+                inferred_value: inferredValues,
+              });
+            }
+
+            // Values in schema but not in data
+            const missingValues = schemaValues.filter(v => !inferredValues.includes(v));
+            if (missingValues.length > 0) {
+              discrepancies.push({
+                field: field.key,
+                issue: `Enum values in schema but not in data: ${missingValues.join(', ')}`,
                 schema_value: schemaValues,
                 inferred_value: inferredValues,
               });
