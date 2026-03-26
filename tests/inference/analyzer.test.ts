@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { inferFieldType } from '../../src/inference/analyzer.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
+import Database from 'better-sqlite3';
+import { createSchema } from '../../src/db/schema.js';
+import { parseFile } from '../../src/parser/index.js';
+import { indexFile } from '../../src/sync/indexer.js';
+import { loadSchemas } from '../../src/schema/loader.js';
+import { inferFieldType, analyzeVault } from '../../src/inference/analyzer.js';
 
 describe('inferFieldType', () => {
   it('infers reference from value_type reference', () => {
@@ -114,5 +121,139 @@ describe('inferFieldType', () => {
     }));
     const result = inferFieldType(rows);
     expect(result.sample_values.length).toBe(10);
+  });
+});
+
+const fixturesDir = resolve(import.meta.dirname, '../fixtures');
+
+describe('analyzeVault', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function loadAndIndex(fixture: string, relativePath: string) {
+    const raw = readFileSync(resolve(fixturesDir, fixture), 'utf-8');
+    const parsed = parseFile(relativePath, raw);
+    indexFile(db, parsed, relativePath, '2025-03-10T00:00:00.000Z', raw);
+  }
+
+  it('returns type analysis for all indexed types', () => {
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+    loadAndIndex('sample-person.md', 'people/alice.md');
+
+    const result = analyzeVault(db);
+    expect(result.types.length).toBeGreaterThanOrEqual(2);
+
+    const task = result.types.find(t => t.name === 'task');
+    const person = result.types.find(t => t.name === 'person');
+    expect(task).toBeDefined();
+    expect(person).toBeDefined();
+    expect(task!.node_count).toBe(1);
+    expect(person!.node_count).toBe(1);
+    expect(task!.has_existing_schema).toBe(false);
+    expect(person!.has_existing_schema).toBe(false);
+  });
+
+  it('filters by types param', () => {
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+    loadAndIndex('sample-person.md', 'people/alice.md');
+
+    const result = analyzeVault(db, ['task']);
+    expect(result.types.length).toBe(1);
+    expect(result.types[0].name).toBe('task');
+  });
+
+  it('infers correct field types from indexed data', () => {
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+
+    const result = analyzeVault(db);
+    const task = result.types.find(t => t.name === 'task')!;
+    expect(task).toBeDefined();
+
+    const assignee = task.inferred_fields.find(f => f.key === 'assignee');
+    expect(assignee).toBeDefined();
+    expect(assignee!.inferred_type).toBe('reference');
+
+    const dueDate = task.inferred_fields.find(f => f.key === 'due_date');
+    expect(dueDate).toBeDefined();
+    expect(dueDate!.inferred_type).toBe('date');
+  });
+
+  it('computes frequency as fraction of nodes with the field', () => {
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+    loadAndIndex('sample-meeting.md', 'meetings/q1-planning.md');
+
+    const result = analyzeVault(db);
+    const task = result.types.find(t => t.name === 'task')!;
+    expect(task).toBeDefined();
+    // sample-meeting.md has types: [meeting, task], so task has node_count=2
+    expect(task.node_count).toBe(2);
+
+    // 'source' field only exists on sample-task.md (review.md), not on sample-meeting.md
+    const source = task.inferred_fields.find(f => f.key === 'source');
+    expect(source).toBeDefined();
+    expect(source!.frequency).toBe(0.5);
+  });
+
+  it('detects list<reference> for attendees field', () => {
+    loadAndIndex('sample-meeting.md', 'meetings/q1-planning.md');
+
+    const result = analyzeVault(db);
+    const meeting = result.types.find(t => t.name === 'meeting')!;
+    expect(meeting).toBeDefined();
+
+    const attendees = meeting.inferred_fields.find(f => f.key === 'attendees');
+    expect(attendees).toBeDefined();
+    expect(attendees!.inferred_type).toBe('list<reference>');
+  });
+
+  it('detects list<string> for tags field', () => {
+    loadAndIndex('sample-person.md', 'people/alice.md');
+
+    const result = analyzeVault(db);
+    const person = result.types.find(t => t.name === 'person')!;
+    expect(person).toBeDefined();
+
+    const tags = person.inferred_fields.find(f => f.key === 'tags');
+    expect(tags).toBeDefined();
+    expect(tags!.inferred_type).toBe('list<string>');
+  });
+
+  it('detects discrepancies against existing schemas', () => {
+    loadSchemas(db, fixturesDir);
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+
+    const result = analyzeVault(db);
+    const task = result.types.find(t => t.name === 'task')!;
+    expect(task).toBeDefined();
+    expect(task.has_existing_schema).toBe(true);
+
+    // 'source' field is in the data but not in the schema
+    const sourceDiscrepancy = task.discrepancies.find(d => d.field === 'source');
+    expect(sourceDiscrepancy).toBeDefined();
+    expect(sourceDiscrepancy!.issue).toContain('not in schema');
+  });
+
+  it('detects shared fields across types', () => {
+    loadAndIndex('sample-task.md', 'tasks/review.md');
+    loadAndIndex('sample-meeting.md', 'meetings/q1-planning.md');
+
+    const result = analyzeVault(db);
+    const task = result.types.find(t => t.name === 'task')!;
+    const meeting = result.types.find(t => t.name === 'meeting')!;
+    expect(task).toBeDefined();
+    expect(meeting).toBeDefined();
+
+    // 'status' exists in both task and meeting types
+    expect(task.shared_fields).toContain('status');
+    expect(meeting.shared_fields).toContain('status');
   });
 });
