@@ -13,7 +13,6 @@ interface FieldRow {
  */
 export function inferFieldType(
   rows: FieldRow[],
-  nodeCount: number,
 ): Omit<InferredField, 'key' | 'frequency'> {
   const distinctValues = rows.length;
   const sampleValues = rows.slice(0, 10).map(r => r.value_text);
@@ -73,14 +72,14 @@ export function inferFieldType(
   }
 
   // Priority 6: string containing [[ -> reference (before enum check!)
-  const refRows = rows.filter(r => r.value_type === 'string' && r.value_text.includes('[['));
-  const refCount = refRows.reduce((s, r) => s + r.count, 0);
-  if (refCount > maxCount / 2) {
+  // All string values must be wiki-links for this to trigger
+  const stringRows = rows.filter(r => r.value_type === 'string');
+  const allReferences = stringRows.length > 0 && stringRows.every(r => r.value_text.includes('[['));
+  if (allReferences) {
     return { ...base, inferred_type: 'reference', enum_candidate: false };
   }
 
   // Priority 7: enum heuristic -- <=20 distinct, ratio < 0.5
-  const stringRows = rows.filter(r => r.value_type === 'string');
   const stringDistinct = stringRows.length;
   const stringTotal = stringRows.reduce((s, r) => s + r.count, 0);
   if (stringDistinct >= 2 && stringDistinct <= 20 && stringTotal > 0 && stringDistinct / stringTotal < 0.5) {

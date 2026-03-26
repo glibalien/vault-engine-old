@@ -6,7 +6,7 @@ describe('inferFieldType', () => {
     const rows = [
       { value_type: 'reference', value_text: '[[Alice]]', count: 3 },
     ];
-    const result = inferFieldType(rows, 5);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('reference');
     expect(result.enum_candidate).toBe(false);
   });
@@ -15,7 +15,7 @@ describe('inferFieldType', () => {
     const rows = [
       { value_type: 'date', value_text: '2025-03-10T00:00:00.000Z', count: 4 },
     ];
-    const result = inferFieldType(rows, 4);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('date');
   });
 
@@ -23,7 +23,7 @@ describe('inferFieldType', () => {
     const rows = [
       { value_type: 'number', value_text: '42', count: 2 },
     ];
-    const result = inferFieldType(rows, 3);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('number');
   });
 
@@ -32,7 +32,7 @@ describe('inferFieldType', () => {
       { value_type: 'boolean', value_text: 'true', count: 1 },
       { value_type: 'boolean', value_text: 'false', count: 2 },
     ];
-    const result = inferFieldType(rows, 5);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('boolean');
   });
 
@@ -40,7 +40,7 @@ describe('inferFieldType', () => {
     const rows = [
       { value_type: 'list', value_text: '["[[Alice]]","[[Bob]]"]', count: 3 },
     ];
-    const result = inferFieldType(rows, 3);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('list<reference>');
   });
 
@@ -48,7 +48,7 @@ describe('inferFieldType', () => {
     const rows = [
       { value_type: 'list', value_text: '["engineering","leadership"]', count: 2 },
     ];
-    const result = inferFieldType(rows, 2);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('list<string>');
   });
 
@@ -57,7 +57,7 @@ describe('inferFieldType', () => {
       { value_type: 'string', value_text: '[[Alice]]', count: 2 },
       { value_type: 'string', value_text: '[[Bob]]', count: 3 },
     ];
-    const result = inferFieldType(rows, 5);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('reference');
     // Must NOT be classified as enum even though distinct=2, ratio=2/5=0.4 < 0.5
     expect(result.enum_candidate).toBe(false);
@@ -69,7 +69,7 @@ describe('inferFieldType', () => {
       { value_type: 'string', value_text: 'done', count: 8 },
       { value_type: 'string', value_text: 'in-progress', count: 5 },
     ];
-    const result = inferFieldType(rows, 23);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('enum');
     expect(result.enum_candidate).toBe(true);
     expect(result.enum_values).toEqual(['todo', 'done', 'in-progress']);
@@ -81,7 +81,7 @@ describe('inferFieldType', () => {
       value_text: `value-${i}`,
       count: 2,
     }));
-    const result = inferFieldType(rows, 50);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('string');
     expect(result.enum_candidate).toBe(false);
   });
@@ -92,7 +92,7 @@ describe('inferFieldType', () => {
       { value_type: 'string', value_text: 'bar', count: 1 },
       { value_type: 'string', value_text: 'baz', count: 1 },
     ];
-    const result = inferFieldType(rows, 3);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('string');
     expect(result.enum_candidate).toBe(false);
   });
@@ -102,7 +102,7 @@ describe('inferFieldType', () => {
       { value_type: 'string', value_text: 'hello', count: 10 },
       { value_type: 'number', value_text: '42', count: 2 },
     ];
-    const result = inferFieldType(rows, 12);
+    const result = inferFieldType(rows);
     expect(result.inferred_type).toBe('string');
   });
 
@@ -112,7 +112,7 @@ describe('inferFieldType', () => {
       value_text: `val-${i}`,
       count: 1,
     }));
-    const result = inferFieldType(rows, 15);
+    const result = inferFieldType(rows);
     expect(result.sample_values.length).toBe(10);
   });
 });
