@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { getAllSchemas, getSchema } from '../schema/loader.js';
+import { getAllSchemas, getSchema, loadSchemas } from '../schema/loader.js';
 import { mergeSchemaFields } from '../schema/merger.js';
 import { validateNode } from '../schema/validator.js';
 import { evaluateComputed } from '../schema/computed.js';
@@ -17,6 +17,9 @@ import { releaseWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
+import { analyzeVault } from '../inference/analyzer.js';
+import { generateSchemas, writeSchemaFiles } from '../inference/generator.js';
+import type { InferenceMode } from '../inference/types.js';
 import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler, extractTasksHandler } from './workflow-tools.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
@@ -1635,6 +1638,61 @@ export function createServer(
     },
     async (params) => {
       return extractTasksHandler(db, batchMutate, params);
+    },
+  );
+
+  // ── infer-schemas ──────────────────────────────────────────────
+  server.tool(
+    'infer-schemas',
+    'Analyze indexed vault data and infer schema definitions. Detects field types, enum candidates, discrepancies against existing schemas, and shared fields across types. Modes: report (default, analysis only), merge (expand existing schemas), overwrite (replace entirely).',
+    {
+      mode: z.enum(['report', 'merge', 'overwrite']).default('report')
+        .describe('report = analysis only; merge = expand existing schemas; overwrite = replace entirely'),
+      types: z.array(z.string().min(1)).optional()
+        .describe('Limit analysis to specific types. Omit to analyze all.'),
+    },
+    async ({ mode, types }) => {
+      const analysis = analyzeVault(db, types);
+
+      if (analysis.types.length === 0) {
+        if (types && types.length > 0) {
+          const foundNames = new Set(analysis.types.map(t => t.name));
+          const missing = types.find(t => !foundNames.has(t));
+          return toolError(
+            `Type '${missing ?? types[0]}' not found in indexed data.`,
+            'NOT_FOUND',
+          );
+        }
+        return toolError('No indexed nodes found. Run incremental index first.', 'VALIDATION_ERROR');
+      }
+
+      // Check that all requested types were found
+      if (types) {
+        const foundNames = new Set(analysis.types.map(t => t.name));
+        const missing = types.find(t => !foundNames.has(t));
+        if (missing) {
+          return toolError(`Type '${missing}' not found in indexed data.`, 'NOT_FOUND');
+        }
+      }
+
+      const response: Record<string, unknown> = { types: analysis.types };
+
+      if (mode !== 'report') {
+        const existingSchemas = new Map(
+          getAllSchemas(db).map(s => [s.name, s]),
+        );
+        const schemas = generateSchemas(analysis, mode as InferenceMode, existingSchemas);
+        const filesWritten = writeSchemaFiles(schemas, vaultPath);
+
+        // Reload schemas into DB so changes take effect immediately
+        loadSchemas(db, vaultPath);
+
+        response.files_written = filesWritten;
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(response) }],
+      };
     },
   );
 
