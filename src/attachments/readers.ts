@@ -4,14 +4,14 @@ import OpenAI from 'openai';
 import { getMimeType } from './types.js';
 import type { ReadResult, ImageContent } from './types.js';
 
-interface WhisperSegment {
+export interface WhisperSegment {
   speaker_id?: number | null;
   text: string;
   start: number;
   end: number;
 }
 
-function formatTimestamp(seconds: number): string {
+export function formatTimestamp(seconds: number): string {
   const total = Math.floor(seconds);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
@@ -20,7 +20,7 @@ function formatTimestamp(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function formatDiarized(segments: WhisperSegment[]): string {
+export function formatDiarized(segments: WhisperSegment[]): string {
   const merged: Array<{ speaker: number | null; text: string; start: number; end: number }> = [];
   for (const seg of segments) {
     const speaker = seg.speaker_id ?? null;
