@@ -1,4 +1,5 @@
 // vault-engine entry point
+import 'dotenv/config';
 import { resolve, dirname, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
