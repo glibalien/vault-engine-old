@@ -119,7 +119,7 @@ Schema inference from indexed vault data.
 CLI argument parsing and HTTP transport setup.
 
 - **`args.ts`** — `parseArgs(argv)` extracts `--transport` (stdio|http|both, default stdio) and `--port` (default 3333) flags plus positional dbPath/vaultPath.
-- **`http.ts`** — `createHttpApp(serverFactory)` creates an Express app with POST/GET/DELETE `/mcp` routes. Per-session `StreamableHTTPServerTransport` instances stored in a `Map`. New `McpServer` created per session via factory (MCP SDK constraint: one transport per server). `startHttpTransport(serverFactory, port)` calls `createHttpApp` and starts listening. Logs to stderr.
+- **`http.ts`** — `createHttpApp(serverFactory)` creates an Express app with POST/GET/DELETE/HEAD `/mcp` routes. Per-session `StreamableHTTPServerTransport` instances stored in a `Map`. New `McpServer` created per session via factory (MCP SDK constraint: one transport per server). HEAD and sessionless GET return `MCP-Protocol-Version: 2025-03-26` for protocol discovery. `startHttpTransport(serverFactory, port)` calls `createHttpApp` and starts listening. Returns `{ app, httpServer }`. Logs to stderr.
 - **`index.ts`** — Re-exports `createHttpApp`, `startHttpTransport`, `parseArgs`.
 
 ### Entry Point (`src/index.ts`)
