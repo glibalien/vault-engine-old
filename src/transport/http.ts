@@ -1,4 +1,5 @@
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
+import { createServer as createNodeHttpServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -47,9 +48,19 @@ export function createHttpApp(serverFactory: ServerFactory): Express {
       if (id) sessions.delete(id);
     };
 
-    const server = serverFactory();
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+    try {
+      const server = serverFactory();
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      const id = transport.sessionId;
+      if (id) sessions.delete(id);
+      await transport.close().catch(() => {});
+      process.stderr.write(`[vault-engine] HTTP error: ${err instanceof Error ? err.message : err}\n`);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   });
 
   app.get('/mcp', async (req: Request, res: Response) => {
@@ -77,9 +88,9 @@ export function createHttpApp(serverFactory: ServerFactory): Express {
       res.status(404).json({ error: 'Session not found' });
       return;
     }
-    await transport.handleRequest(req, res);
     sessions.delete(sessionId);
-    await transport.close();
+    await transport.handleRequest(req, res);
+    await transport.close().catch(() => {});
   });
 
   return app;
@@ -88,13 +99,14 @@ export function createHttpApp(serverFactory: ServerFactory): Express {
 export async function startHttpTransport(
   serverFactory: ServerFactory,
   port: number,
-): Promise<Express> {
+): Promise<{ app: Express; httpServer: Server }> {
   const app = createHttpApp(serverFactory);
 
   return new Promise((resolve) => {
-    app.listen(port, () => {
+    const httpServer = createNodeHttpServer(app);
+    httpServer.listen(port, () => {
       process.stderr.write(`[vault-engine] HTTP listening on http://localhost:${port}/mcp\n`);
-      resolve(app);
+      resolve({ app, httpServer });
     });
   });
 }
