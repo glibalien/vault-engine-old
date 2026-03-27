@@ -80,10 +80,12 @@ export async function readDocument(absolutePath: string, filename: string): Prom
     if (ext === 'txt' || ext === 'md') {
       text = readFileSync(absolutePath, 'utf-8');
     } else if (ext === 'pdf') {
-      const pdfParse = (await import('pdf-parse')).default;
+      const { PDFParse } = await import('pdf-parse');
       const buffer = readFileSync(absolutePath);
-      const result = await pdfParse(buffer);
-      text = result.text;
+      const parser = new PDFParse({ data: buffer }) as any;
+      await parser.load();
+      const result = await parser.getText();
+      text = typeof result === 'string' ? result : result.text ?? String(result);
     } else if (ext === 'docx') {
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ path: absolutePath });
