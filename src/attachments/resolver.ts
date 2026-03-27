@@ -1,6 +1,6 @@
 // src/attachments/resolver.ts
 import { existsSync, readdirSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import { classifyAttachment } from './types.js';
 import type { AttachmentType, ResolvedEmbed } from './types.js';
 
@@ -26,6 +26,10 @@ export function parseEmbeds(raw: string): string[] {
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.vault-engine']);
 
+function isInsideVault(candidate: string, vaultPath: string): boolean {
+  return resolve(candidate).startsWith(resolve(vaultPath) + '/');
+}
+
 export function resolveEmbedPath(
   filename: string,
   vaultPath: string,
@@ -33,15 +37,15 @@ export function resolveEmbedPath(
 ): string | null {
   // 1. Attachments/ folder
   const attachmentsPath = join(vaultPath, 'Attachments', filename);
-  if (existsSync(attachmentsPath)) return attachmentsPath;
+  if (isInsideVault(attachmentsPath, vaultPath) && existsSync(attachmentsPath)) return attachmentsPath;
 
   // 2. Vault root
   const rootPath = join(vaultPath, filename);
-  if (existsSync(rootPath)) return rootPath;
+  if (isInsideVault(rootPath, vaultPath) && existsSync(rootPath)) return rootPath;
 
   // 3. Same directory as source note
   const siblingPath = join(sourceDir, filename);
-  if (existsSync(siblingPath)) return siblingPath;
+  if (isInsideVault(siblingPath, vaultPath) && existsSync(siblingPath)) return siblingPath;
 
   // 4. Recursive search (slow path)
   const target = basename(filename);

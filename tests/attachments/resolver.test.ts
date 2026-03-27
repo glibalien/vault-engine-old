@@ -100,4 +100,10 @@ describe('resolveEmbedPath', () => {
     const result = resolveEmbedPath('photo.png', vaultDir, join(vaultDir, 'notes'));
     expect(result).toBeNull();
   });
+
+  it('blocks path traversal attempts', () => {
+    // Even if the file exists outside the vault, traversal should be blocked
+    const result = resolveEmbedPath('../../../etc/passwd', vaultDir, join(vaultDir, 'notes'));
+    expect(result).toBeNull();
+  });
 });
