@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "bench": "tsx benchmarks/run.ts"
+    "bench": "tsx benchmarks/run.ts",
+    "start:http": "node dist/index.js --transport http"
   },
   "engines": {
     "node": ">=20"

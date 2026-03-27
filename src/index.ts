@@ -8,9 +8,12 @@ import { loadSchemas } from './schema/index.js';
 import { incrementalIndex } from './sync/index.js';
 import { loadVecExtension, createVecTable, getVecDimensions, dropVecTable, createProvider, startEmbeddingWorker } from './embeddings/index.js';
 import type { EmbeddingConfig } from './embeddings/types.js';
+import { parseArgs } from './transport/args.js';
+import { startHttpTransport } from './transport/http.js';
 
-const dbPath = process.argv[2] ?? resolve(process.cwd(), '.vault-engine', 'vault.db');
-const vaultPath = process.argv[3] ?? resolve(dirname(dbPath), '..');
+const args = parseArgs(process.argv.slice(2));
+const dbPath = args.dbPath ?? resolve(process.cwd(), '.vault-engine', 'vault.db');
+const vaultPath = args.vaultPath ?? resolve(dirname(dbPath), '..');
 
 const db = openDatabase(dbPath);
 createSchema(db);
@@ -59,6 +62,14 @@ if (embeddingConfig) {
 const indexResult = incrementalIndex(db, vaultPath);
 console.error(`[vault-engine] indexed ${indexResult.indexed}, skipped ${indexResult.skipped}, deleted ${indexResult.deleted}`);
 
-const server = createServer(db, vaultPath, embeddingConfig ? { embeddingConfig } : undefined);
-const transport = new StdioServerTransport();
-await server.connect(transport);
+const serverFactory = () => createServer(db, vaultPath, embeddingConfig ? { embeddingConfig } : undefined);
+
+if (args.transport === 'stdio' || args.transport === 'both') {
+  const server = serverFactory();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+if (args.transport === 'http' || args.transport === 'both') {
+  await startHttpTransport(serverFactory, args.port);
+}
