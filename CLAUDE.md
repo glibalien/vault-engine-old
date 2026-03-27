@@ -17,6 +17,9 @@ npx vitest run tests/parser/wiki-links.test.ts  # run a single test file
 npm run build         # compile TypeScript (tsc)
 npx tsc --noEmit      # type-check without emitting
 npm run dev           # run with tsx watch (hot reload)
+npm run start:http    # start with HTTP transport on port 3333
+node dist/index.js --transport http --port 3333  # HTTP only (custom port)
+node dist/index.js --transport both --port 3333  # stdio + HTTP simultaneously
 ```
 
 ## Architecture
@@ -111,9 +114,17 @@ Schema inference from indexed vault data.
 - **`generator.ts`** — `generateSchemas(analysis, mode, existingSchemas)` produces `SchemaDefinition[]` based on mode. `writeSchemaFiles(schemas, vaultPath)` serializes to `.schemas/*.yaml`. Merge mode preserves existing fields/properties and unions enum values. Overwrite mode produces clean schemas from data.
 - **`index.ts`** — Re-exports all types and functions.
 
+### Transport Layer (`src/transport/`)
+
+CLI argument parsing and HTTP transport setup.
+
+- **`args.ts`** — `parseArgs(argv)` extracts `--transport` (stdio|http|both, default stdio) and `--port` (default 3333) flags plus positional dbPath/vaultPath.
+- **`http.ts`** — `createHttpApp(serverFactory)` creates an Express app with POST/GET/DELETE `/mcp` routes. Per-session `StreamableHTTPServerTransport` instances stored in a `Map`. New `McpServer` created per session via factory (MCP SDK constraint: one transport per server). `startHttpTransport(serverFactory, port)` calls `createHttpApp` and starts listening. Logs to stderr.
+- **`index.ts`** — Re-exports `createHttpApp`, `startHttpTransport`, `parseArgs`.
+
 ### Entry Point (`src/index.ts`)
 
-Opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts MCP server over stdio transport. Embedding config loaded from `.vault-engine/config.json` if present.
+Opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts transport(s) based on `--transport` flag. Default is stdio. HTTP mode creates an Express server on the specified port. Both mode runs stdio and HTTP simultaneously. Embedding config loaded from `.vault-engine/config.json` if present.
 
 ### Schema Layer (`src/schema/`)
 
