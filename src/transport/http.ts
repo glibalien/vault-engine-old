@@ -63,10 +63,16 @@ export function createHttpApp(serverFactory: ServerFactory): Express {
     }
   });
 
+  app.head('/mcp', (_req: Request, res: Response) => {
+    res.set('MCP-Protocol-Version', '2025-03-26');
+    res.status(200).end();
+  });
+
   app.get('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId) {
-      res.status(400).json({ error: 'mcp-session-id header required' });
+      res.set('MCP-Protocol-Version', '2025-03-26');
+      res.status(200).end();
       return;
     }
     const transport = sessions.get(sessionId);

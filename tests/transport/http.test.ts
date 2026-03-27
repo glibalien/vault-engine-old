@@ -145,6 +145,18 @@ describe('HTTP transport', () => {
     expect(afterRes.status).toBe(404);
   });
 
+  it('HEAD /mcp returns 200 with MCP-Protocol-Version header', async () => {
+    const res = await request(app).head('/mcp');
+    expect(res.status).toBe(200);
+    expect(res.headers['mcp-protocol-version']).toBe('2025-03-26');
+  });
+
+  it('GET /mcp without session returns 200 with MCP-Protocol-Version header', async () => {
+    const res = await request(app).get('/mcp');
+    expect(res.status).toBe(200);
+    expect(res.headers['mcp-protocol-version']).toBe('2025-03-26');
+  });
+
   it('logs requests to stderr', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
 
