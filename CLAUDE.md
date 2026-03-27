@@ -134,7 +134,7 @@ CLI argument parsing and HTTP transport setup.
 
 ### Entry Point (`src/index.ts`)
 
-Opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts transport(s) based on `--transport` flag. Default is stdio. HTTP mode creates an Express server on the specified port. Both mode runs stdio and HTTP simultaneously. Embedding config loaded from `.vault-engine/config.json` if present.
+Loads `dotenv/config` first (reads `.env` for `FIREWORKS_API_KEY` etc.), then opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts transport(s) based on `--transport` flag. Default is stdio. HTTP mode creates an Express server on the specified port. Both mode runs stdio and HTTP simultaneously. Embedding config loaded from `.vault-engine/config.json` if present. A `.env.example` template is provided; `.env` is gitignored.
 
 ### Schema Layer (`src/schema/`)
 
