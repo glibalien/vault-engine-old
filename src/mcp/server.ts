@@ -9,7 +9,7 @@ import { evaluateComputed } from '../schema/computed.js';
 import type { ComputedDefinition, ValidationWarning } from '../schema/types.js';
 import type { FieldEntry, FieldValueType } from '../parser/types.js';
 import { existsSync, statSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { parseFile } from '../parser/index.js';
 import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, deleteNodeFile, sanitizeSegment } from '../serializer/index.js';
 import { indexFile, deleteFile } from '../sync/indexer.js';
@@ -21,6 +21,9 @@ import { analyzeVault } from '../inference/analyzer.js';
 import { generateSchemas, writeSchemaFiles } from '../inference/generator.js';
 import type { InferenceMode } from '../inference/types.js';
 import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler, extractTasksHandler } from './workflow-tools.js';
+import { resolveEmbeds } from '../attachments/resolver.js';
+import { readImage, readAudio, readDocument } from '../attachments/readers.js';
+import type { ImageContent, TextContent } from '../attachments/types.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1690,6 +1693,99 @@ export function createServer(
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(response) }],
+      };
+    },
+  );
+
+  // --- read-embedded tool ---
+  server.tool(
+    'read-embedded',
+    'Read and return embedded attachments (![[file]]) from a vault note. Images returned as base64, audio transcribed via Whisper, documents as extracted text.',
+    {
+      node_id: z.string().min(1).describe('Vault-relative file path of the node to read embeds from, e.g. "notes/meeting.md"'),
+      filter_type: z.enum(['all', 'audio', 'image', 'document']).optional().default('all')
+        .describe('Filter to specific attachment types'),
+    },
+    async ({ node_id, filter_type }) => {
+      if (hasPathTraversal(node_id)) {
+        return toolError('Invalid node_id: path traversal not allowed', 'VALIDATION_ERROR');
+      }
+
+      // Check node exists in DB
+      const nodeRow = db.prepare('SELECT id, file_path FROM nodes WHERE id = ?').get(node_id) as
+        | { id: string; file_path: string }
+        | undefined;
+      if (!nodeRow) {
+        return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
+      }
+
+      // Read raw markdown from disk
+      const absPath = join(vaultPath, nodeRow.file_path);
+      if (!existsSync(absPath)) {
+        return toolError(`File not found on disk: ${nodeRow.file_path}`, 'NOT_FOUND');
+      }
+      const raw = readFileSync(absPath, 'utf-8');
+
+      // Resolve embeds
+      const sourceDir = dirname(absPath);
+      const embeds = resolveEmbeds(raw, vaultPath, sourceDir, filter_type === 'all' ? undefined : filter_type);
+
+      if (embeds.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: `No embedded attachments found in ${node_id}.` }],
+        };
+      }
+
+      // Read each resolved embed
+      const contentBlocks: Array<ImageContent | TextContent> = [];
+      const counts = { image: 0, audio: 0, document: 0, unresolved: 0, errors: 0 };
+
+      for (const embed of embeds) {
+        if (!embed.absolutePath) {
+          counts.unresolved++;
+          continue;
+        }
+
+        let result;
+        switch (embed.attachmentType) {
+          case 'image':
+            result = readImage(embed.absolutePath, embed.filename);
+            if (result.ok) counts.image++;
+            else counts.errors++;
+            contentBlocks.push(...result.content);
+            break;
+          case 'audio':
+            result = await readAudio(embed.absolutePath, embed.filename);
+            if (result.ok) counts.audio++;
+            else counts.errors++;
+            contentBlocks.push(...result.content);
+            break;
+          case 'document':
+            result = await readDocument(embed.absolutePath, embed.filename);
+            if (result.ok) counts.document++;
+            else counts.errors++;
+            contentBlocks.push(...result.content);
+            break;
+          default:
+            counts.unresolved++;
+            break;
+        }
+      }
+
+      // Build summary
+      const parts: string[] = [];
+      if (counts.image > 0) parts.push(`${counts.image} image${counts.image > 1 ? 's' : ''}`);
+      if (counts.audio > 0) parts.push(`${counts.audio} audio file${counts.audio > 1 ? 's' : ''} (transcribed)`);
+      if (counts.document > 0) parts.push(`${counts.document} document${counts.document > 1 ? 's' : ''}`);
+      if (counts.errors > 0) parts.push(`${counts.errors} failed`);
+      if (counts.unresolved > 0) parts.push(`${counts.unresolved} could not be resolved`);
+      const summary = `Found ${parts.join(', ')}.`;
+
+      return {
+        content: [
+          { type: 'text' as const, text: summary },
+          ...contentBlocks,
+        ],
       };
     },
   );
