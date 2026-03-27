@@ -82,7 +82,7 @@ Full-text search over indexed content.
 
 MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
-- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 20 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
+- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 21 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
   - **`get-node`** — Returns full node details by ID (vault-relative path). Optional `include_relationships` and `include_computed` flags.
   - **`get-recent`** — Returns nodes ordered by `updated_at DESC`. Optional `schema_type` and `since` filters.
@@ -103,7 +103,17 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
   - **`create-meeting-notes`** — Creates meeting node, auto-resolves/creates attendee nodes via batch-mutate.
   - **`extract-tasks`** — Creates task nodes from a source node with back-references via batch-mutate.
   - **`infer-schemas`** — Analyzes indexed vault data to infer schema definitions. Reports field types, frequencies, enum candidates, discrepancies against existing schemas, and shared fields across types. Three modes: report (analysis only), merge (expand existing schemas with inferred data), overwrite (replace schemas entirely).
+  - **`read-embedded`** — Reads `![[embed]]` attachments from a node. Resolves embed paths (Attachments/ → root → sibling → recursive search), then reads by type: images as base64 MCP image blocks, audio transcribed via Fireworks Whisper API (OpenAI SDK), documents via pdf-parse/mammoth/fs. Returns array of content blocks with summary. Requires `FIREWORKS_API_KEY` env var for audio only.
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
+
+### Attachments Layer (`src/attachments/`)
+
+Embed resolution and content extraction for `![[file]]` attachments.
+
+- **`types.ts`** — `AttachmentType` enum (image/audio/document/unknown), `ResolvedEmbed`, `ReadResult`, `ImageContent`, `TextContent` interfaces. `classifyAttachment(filename)` and `getMimeType(filename)` helpers.
+- **`resolver.ts`** — `parseEmbeds(raw)` extracts `![[filename]]` from markdown via regex (not AST — remark-wiki-link doesn't handle `!` prefix). `resolveEmbedPath(filename, vaultPath, sourceDir)` tries Attachments/ → vault root → source dir → recursive search (skips .git, node_modules, .vault-engine). Path traversal protection ensures resolved paths stay inside vault. `resolveEmbeds(raw, vaultPath, sourceDir, filterType?)` combines parsing + resolution.
+- **`readers.ts`** — `readImage(path, filename)` returns base64 image block (SVG as text). `readAudio(path, filename)` calls Fireworks Whisper via OpenAI SDK with diarization, formats speaker-labeled transcript. `readDocument(path, filename)` handles PDF (pdf-parse), DOCX (mammoth), TXT/MD (fs). All return `ReadResult` with per-file error handling.
+- **`index.ts`** — Re-exports all types and functions.
 
 ### Inference Layer (`src/inference/`)
 
