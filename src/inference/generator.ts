@@ -12,9 +12,9 @@ function titleCase(name: string): string {
     .join(' ');
 }
 
-function buildFreshSchema(name: string, inferredFields: InferenceResult['types'][0]['inferred_fields']): SchemaDefinition {
+function buildFreshSchema(name: string, typeAnalysis: InferenceResult['types'][0]): SchemaDefinition {
   const fields: Record<string, FieldDefinition> = {};
-  for (const field of inferredFields) {
+  for (const field of typeAnalysis.inferred_fields) {
     const def: FieldDefinition = { type: field.inferred_type };
     if (field.inferred_type === 'enum' && field.enum_values) {
       def.values = [...field.enum_values];
@@ -22,16 +22,22 @@ function buildFreshSchema(name: string, inferredFields: InferenceResult['types']
     fields[field.key] = def;
   }
 
-  return {
+  const schema: SchemaDefinition = {
     name,
     display_name: titleCase(name),
     fields,
   };
+
+  if (typeAnalysis.inferred_template) {
+    schema.serialization = { filename_template: typeAnalysis.inferred_template };
+  }
+
+  return schema;
 }
 
 function mergeSchema(
   existing: ResolvedSchema,
-  inferredFields: InferenceResult['types'][0]['inferred_fields'],
+  typeAnalysis: InferenceResult['types'][0],
 ): SchemaDefinition {
   const fields: Record<string, FieldDefinition> = {};
 
@@ -41,7 +47,7 @@ function mergeSchema(
   }
 
   // Add inferred fields that don't already exist, and union enum values
-  for (const field of inferredFields) {
+  for (const field of typeAnalysis.inferred_fields) {
     if (fields[field.key]) {
       // Field exists — only merge enum values
       const existingDef = fields[field.key];
@@ -68,8 +74,14 @@ function mergeSchema(
   // Preserve existing properties
   if (existing.icon) schema.icon = existing.icon;
   if (existing.extends) schema.extends = existing.extends;
-  if (existing.serialization) schema.serialization = existing.serialization;
   if (existing.computed) schema.computed = existing.computed;
+
+  // Serialization: preserve existing, or populate from inference
+  if (existing.serialization) {
+    schema.serialization = existing.serialization;
+  } else if (typeAnalysis.inferred_template) {
+    schema.serialization = { filename_template: typeAnalysis.inferred_template };
+  }
 
   return schema;
 }
@@ -87,13 +99,13 @@ export function generateSchemas(
     if (mode === 'merge' && typeAnalysis.has_existing_schema) {
       const existing = existingSchemas.get(typeAnalysis.name);
       if (existing) {
-        schemas.push(mergeSchema(existing, typeAnalysis.inferred_fields));
+        schemas.push(mergeSchema(existing, typeAnalysis));
         continue;
       }
     }
 
     // overwrite mode, or merge with no existing schema — build fresh
-    schemas.push(buildFreshSchema(typeAnalysis.name, typeAnalysis.inferred_fields));
+    schemas.push(buildFreshSchema(typeAnalysis.name, typeAnalysis));
   }
 
   return schemas;

@@ -147,6 +147,57 @@ describe('generateSchemas', () => {
     const result = generateSchemas(analysis, 'overwrite', new Map());
     expect(result[0].display_name).toBe('Work Task');
   });
+
+  it('includes inferred_template in fresh schema (overwrite mode)', () => {
+    const analysis = makeAnalysis();
+    analysis.types[0].inferred_template = 'tasks/{{title}}.md';
+
+    const result = generateSchemas(analysis, 'overwrite', new Map());
+    expect(result[0].serialization?.filename_template).toBe('tasks/{{title}}.md');
+  });
+
+  it('does not set serialization when inferred_template is null', () => {
+    const analysis = makeAnalysis();
+    analysis.types[0].inferred_template = null;
+
+    const result = generateSchemas(analysis, 'overwrite', new Map());
+    expect(result[0].serialization).toBeUndefined();
+  });
+
+  it('does not overwrite existing template in merge mode', () => {
+    const existing: ResolvedSchema = {
+      name: 'task',
+      ancestors: [],
+      fields: {
+        status: { type: 'enum', values: ['todo', 'done'] },
+      },
+      serialization: { filename_template: 'custom/{{title}}.md' },
+    };
+
+    const analysis = makeAnalysis();
+    analysis.types[0].has_existing_schema = true;
+    analysis.types[0].inferred_template = 'tasks/{{title}}.md';
+
+    const result = generateSchemas(analysis, 'merge', new Map([['task', existing]]));
+    expect(result[0].serialization?.filename_template).toBe('custom/{{title}}.md');
+  });
+
+  it('populates template in merge mode when existing schema has no template', () => {
+    const existing: ResolvedSchema = {
+      name: 'task',
+      ancestors: [],
+      fields: {
+        status: { type: 'enum', values: ['todo', 'done'] },
+      },
+    };
+
+    const analysis = makeAnalysis();
+    analysis.types[0].has_existing_schema = true;
+    analysis.types[0].inferred_template = 'tasks/{{title}}.md';
+
+    const result = generateSchemas(analysis, 'merge', new Map([['task', existing]]));
+    expect(result[0].serialization?.filename_template).toBe('tasks/{{title}}.md');
+  });
 });
 
 describe('writeSchemaFiles', () => {
