@@ -1341,7 +1341,7 @@ export function createServer(
 
   server.tool(
     'update-node',
-    'Update an existing node\'s fields, body, types, and/or title. Single-node mode: pass node_id. Query mode: pass query to bulk-update all matching nodes (fields only). Fields are merged (not replaced); set a field to null to remove it.',
+    'Update an existing node\'s fields, body, types, and/or title. Single-node mode: pass node_id. Query mode: pass query to bulk-update all matching nodes (fields and/or types). Fields are merged (not replaced); set a field to null to remove it.',
     {
       node_id: z.string().min(1).optional()
         .describe('Vault-relative file path of the node to update, e.g. "tasks/review.md". Mutually exclusive with query.'),
@@ -1354,6 +1354,8 @@ export function createServer(
           value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
         })).optional()
           .describe('Field filters with comparison operators'),
+        path_prefix: z.string().min(1).optional()
+          .describe('Filter by node ID path prefix, e.g. "Daily Notes/"'),
       }).optional()
         .describe('Query to select nodes for bulk update. Mutually exclusive with node_id.'),
       fields: z.record(z.string(), z.unknown()).optional()
@@ -1363,7 +1365,7 @@ export function createServer(
       append_body: z.string().optional()
         .describe('Append to existing body content (single-node mode only)'),
       types: z.array(z.string()).optional()
-        .describe('Replace the node\'s types array (single-node mode only)'),
+        .describe('Replace the node\'s types array'),
       title: z.string().optional()
         .describe('Update the node\'s title in frontmatter (single-node mode only)'),
       dry_run: z.boolean().optional().default(false)
@@ -1402,20 +1404,18 @@ export function createServer(
           return toolError('append_body is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
         }
         if (title !== undefined) {
-          return toolError('title is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
-        }
-        if (types !== undefined) {
-          return toolError('types is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
+          return toolError('title is not allowed in query mode — only fields and types can be bulk-updated', 'VALIDATION_ERROR');
         }
 
-        // Validate: fields required in query mode
-        if (!fieldUpdates || Object.keys(fieldUpdates).length === 0) {
-          return toolError('fields is required in query mode', 'VALIDATION_ERROR');
+        // Validate: fields or types required in query mode
+        const hasFields = fieldUpdates && Object.keys(fieldUpdates).length > 0;
+        if (!hasFields && types === undefined) {
+          return toolError('fields or types is required in query mode', 'VALIDATION_ERROR');
         }
 
-        // Validate: query must have at least schema_type or filters
-        if (!query.schema_type && (!query.filters || query.filters.length === 0)) {
-          return toolError('query must include at least one of schema_type or filters', 'VALIDATION_ERROR');
+        // Validate: query must have at least schema_type, filters, or path_prefix
+        if (!query.schema_type && (!query.filters || query.filters.length === 0) && !query.path_prefix) {
+          return toolError('query must include at least one of schema_type, filters, or path_prefix', 'VALIDATION_ERROR');
         }
 
         try {
@@ -1423,6 +1423,7 @@ export function createServer(
           const { sql, params: queryParams } = buildQuerySql({
             schema_type: query.schema_type,
             filters: query.filters,
+            path_prefix: query.path_prefix,
             limit: 1000,
             select: 'id-only',
           });
@@ -1480,7 +1481,7 @@ export function createServer(
               for (const row of matchedRows) {
                 snapshotFile(row.id);
                 const result = updateNodeInner(
-                  { node_id: row.id, fields: fieldUpdates },
+                  { node_id: row.id, fields: fieldUpdates, types },
                   deferredLocks,
                 );
                 if ('isError' in result && result.isError) {

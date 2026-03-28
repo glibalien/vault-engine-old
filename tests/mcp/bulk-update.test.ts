@@ -188,24 +188,123 @@ describe('update-node query mode (bulk update)', () => {
     expect(text).toContain('title');
   });
 
-  it('errors when types provided with query', async () => {
+  it('updates types on all matching nodes', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: {
+          schema_type: 'task',
+          filters: [{ field: 'status', operator: 'eq', value: 'todo' }],
+        },
+        types: ['task', 'daily-note'],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(2);
+    for (const node of data.nodes) {
+      expect(node.types).toEqual(expect.arrayContaining(['task', 'daily-note']));
+    }
+
+    // Verify files on disk
+    const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
+    expect(contentA).toContain('daily-note');
+
+    // Task C (status: done) should be unchanged
+    const contentC = readFileSync(join(vaultPath, 'tasks/task-c.md'), 'utf-8');
+    expect(contentC).not.toContain('daily-note');
+  });
+
+  it('updates types without fields', async () => {
     seedTasks();
 
     const result = await client.callTool({
       name: 'update-node',
       arguments: {
         query: { schema_type: 'task' },
-        fields: { status: 'done' },
-        types: ['project'],
+        types: ['daily-note'],
       },
     });
 
-    expect(result.isError).toBe(true);
-    const text = (result.content as Array<{ text: string }>)[0].text;
-    expect(text).toContain('types');
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(3);
+    for (const node of data.nodes) {
+      expect(node.types).toContain('daily-note');
+    }
   });
 
-  it('errors when query has no schema_type or filters', async () => {
+  it('uses path_prefix to scope query', async () => {
+    seedTasks();
+    // Add a non-task file outside the tasks/ folder
+    const raw = '---\ntitle: Note\ntypes: [task]\nstatus: todo\n---\n';
+    writeFileSync(join(vaultPath, 'note.md'), raw);
+    db.transaction(() => {
+      const parsed = parseFile('note.md', raw);
+      indexFile(db, parsed, 'note.md', '2026-03-25T00:00:00.000Z', raw);
+    })();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: {
+          schema_type: 'task',
+          path_prefix: 'tasks/',
+        },
+        fields: { status: 'archived' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(3);
+
+    // Root-level note should be unchanged
+    const noteContent = readFileSync(join(vaultPath, 'note.md'), 'utf-8');
+    expect(noteContent).toContain('status: todo');
+  });
+
+  it('uses path_prefix as sole query filter', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: { path_prefix: 'tasks/' },
+        fields: { reviewed: 'true' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(3);
+  });
+
+  it('dry_run works with types', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: { path_prefix: 'tasks/' },
+        types: ['daily-note'],
+        dry_run: true,
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.matched).toBe(3);
+
+    // Files should NOT be changed
+    const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
+    expect(contentA).not.toContain('daily-note');
+  });
+
+  it('errors when query has no schema_type, filters, or path_prefix', async () => {
     seedTasks();
 
     const result = await client.callTool({
@@ -220,6 +319,7 @@ describe('update-node query mode (bulk update)', () => {
     const text = (result.content as Array<{ text: string }>)[0].text;
     expect(text).toContain('schema_type');
     expect(text).toContain('filters');
+    expect(text).toContain('path_prefix');
   });
 
   it('errors when dry_run used with node_id', async () => {
