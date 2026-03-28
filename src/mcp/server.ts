@@ -1605,7 +1605,7 @@ export function createServer(
       try {
         return db.transaction(() => {
           const result = deleteNodeInner({ node_id });
-          if (!result.isError) resolveReferences(db);
+          if (!('isError' in result)) resolveReferences(db);
           return result;
         })();
       } catch (err) {
