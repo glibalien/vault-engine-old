@@ -93,16 +93,16 @@ Full-text search over indexed content.
 
 MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
-- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 22 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
+- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 24 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
   - **`get-node`** — Returns full node details by ID (vault-relative path) or title. Optional `title` param for wiki-link-style lookup when directory is unknown. Optional `include_relationships` and `include_computed` flags.
-  - **`get-recent`** — Returns nodes ordered by `updated_at DESC`. Optional `schema_type` and `since` filters.
-  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `order_by`, and `limit`. Dynamic SQL construction with bound parameters.
+  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `references` (relationship-based filtering by target/direction/rel_type), `path_prefix` (folder scoping), `since` (updated_at filter), `order_by`, and `limit`. Reference-aware field filtering (strips `[[]]` brackets for eq/neq/contains/in). SQL construction extracted to `query-builder.ts`.
   - **`list-schemas`** — No params. Returns schema summaries (name, display_name, icon, extends, ancestors, field_count) from the `schemas` table. Distinct from `list-types` (indexed data vs YAML definitions).
   - **`describe-schema`** — Returns full `ResolvedSchema` by name, including inherited fields.
   - **`validate-node`** — Two modes: by `node_id` (loads from DB) or hypothetical (`types: string[]` + `fields`). Runs `mergeSchemaFields` + `validateNode` pipeline.
   - **`create-node`** — Creates a new markdown file with frontmatter. Validates schemas, generates path, writes file, indexes.
-  - **`update-node`** — Updates fields/body of existing node. Merge semantics for fields, replace/append for body.
+  - **`update-node`** — Updates fields/body/title/types of existing node. Single-node mode (`node_id`) or bulk query mode (`query` with schema_type/filters). Bulk mode restricted to field-only updates (body, append_body, title, types forbidden). Optional `dry_run` in query mode. Merge semantics for fields, replace/append for body.
+  - **`delete-node`** — Deletes a single node by ID. Removes file from disk, cascades DB rows, runs `resolveReferences` to clear stale pointers.
   - **`add-relationship`** — Adds wiki-link reference between nodes (field or body).
   - **`remove-relationship`** — Removes wiki-link reference between nodes.
   - **`rename-node`** — Renames a node and updates all incoming references across the vault.
@@ -117,6 +117,9 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
   - **`read-embedded`** — Reads `![[embed]]` attachments from a node. Resolves embed paths (Attachments/ → root → sibling → recursive search), then reads by type: images as base64 MCP image blocks, audio transcribed via Fireworks Whisper API (OpenAI SDK), documents via pdf-parse/mammoth/fs. Returns array of content blocks with summary. Requires `FIREWORKS_API_KEY` env var for audio only.
   - **`summarize-node`** — Content assembly tool. Reads a node and all its `![[embedded]]` attachments, returning everything as MCP content blocks. Accepts `node_id` or `title` (resolved via wiki-link logic). Returns: metadata header, node body as-is, then each embed's extracted content (audio transcripts, images as base64, documents as text) with `## Type: filename` headers. Missing embeds get `⚠️` warnings. The calling model handles summarization.
   - **`normalize-fields`** — Normalizes frontmatter field names and value shapes across the vault to match schema definitions. Two modes: `audit` (report what would change) and `apply` (execute). Optional `schema_type` filter and explicit `rules` param; when rules omitted, auto-infers from schema definitions. Apply mode uses global write lock, file rollback on failure, and re-indexes after patching.
+  - **`find-duplicates`** — Detects nodes with similar/identical titles. Levenshtein distance with bucketing for performance. Optional `schema_type` filter, `threshold` (0.0–1.0), `limit`, and `include_fields` (Jaccard similarity on field overlap, weighted 0.7 title + 0.3 fields).
+- **`query-builder.ts`** — Extracted SQL construction for `query-nodes`. `buildQuerySql(opts)` handles FTS, type filter, field filters (reference-aware), references JOIN, since, path_prefix, order_by. Reused by `update-node` bulk mode.
+- **`duplicates.ts`** — `findDuplicates(db, opts)` implements title similarity (exact + Levenshtein) with optional field overlap refinement.
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
 
 ### Attachments Layer (`src/attachments/`)
