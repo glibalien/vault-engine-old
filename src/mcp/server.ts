@@ -1140,50 +1140,6 @@ export function createServer(
   );
 
   server.tool(
-    'get-recent',
-    'Get recently created or modified nodes',
-    {
-      schema_type: z.string().min(1).optional()
-        .describe('Filter by schema type, e.g. "task", "meeting"'),
-      since: z.string().min(1).optional()
-        .describe('ISO date — only return nodes updated after this time'),
-      limit: z.number().int().min(1).optional().default(20)
-        .describe('Maximum number of results (default 20)'),
-    },
-    async ({ schema_type, since, limit }) => {
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-      let joinType = '';
-
-      if (schema_type) {
-        joinType = 'JOIN node_types nt ON nt.node_id = n.id';
-        conditions.push('nt.schema_type = ?');
-        params.push(schema_type);
-      }
-
-      if (since) {
-        conditions.push('n.updated_at > ?');
-        params.push(since);
-      }
-
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(limit);
-
-      const rows = db.prepare(`
-        SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
-        FROM nodes n
-        ${joinType}
-        ${where}
-        ORDER BY n.updated_at DESC
-        LIMIT ?
-      `).all(...params) as Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }>;
-
-      const nodes = hydrateNodes(rows);
-      return { content: [{ type: 'text', text: JSON.stringify(nodes) }] };
-    },
-  );
-
-  server.tool(
     'query-nodes',
     'Search for nodes by type, field values, and/or full text. At least one of schema_type, full_text, filters, references, since, or path_prefix is required.',
     {

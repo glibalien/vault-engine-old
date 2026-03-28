@@ -276,19 +276,6 @@ describe('input validation', () => {
     expect(parsed.code).toBe('VALIDATION_ERROR');
   });
 
-  it('get-recent: rejects non-positive limit', async () => {
-    const { text, isError } = await callTool('get-recent', { limit: 0 });
-    expect(isError).toBe(true);
-    // Zod validation errors are caught by the MCP SDK at the schema level
-    expect(text).toContain('too_small');
-  });
-
-  it('get-recent: rejects negative limit', async () => {
-    const { text, isError } = await callTool('get-recent', { limit: -5 });
-    expect(isError).toBe(true);
-    expect(text).toContain('too_small');
-  });
-
   it('query-nodes: rejects non-positive limit', async () => {
     const { text, isError } = await callTool('query-nodes', {
       schema_type: 'task',
