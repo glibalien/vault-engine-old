@@ -6,7 +6,7 @@ import { createSchema } from '../../src/db/schema.js';
 import { parseFile } from '../../src/parser/index.js';
 import { indexFile } from '../../src/sync/indexer.js';
 import { loadSchemas } from '../../src/schema/loader.js';
-import { inferFieldType, analyzeVault } from '../../src/inference/analyzer.js';
+import { inferFilenameTemplate, inferFieldType, analyzeVault } from '../../src/inference/analyzer.js';
 
 describe('inferFieldType', () => {
   it('infers reference from value_type reference', () => {
@@ -125,6 +125,106 @@ describe('inferFieldType', () => {
 });
 
 const fixturesDir = resolve(import.meta.dirname, '../fixtures');
+
+describe('inferFilenameTemplate', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function insertNode(filePath: string, typeName: string) {
+    db.prepare('INSERT OR REPLACE INTO nodes (id, title, file_path, node_type) VALUES (?, ?, ?, ?)').run(
+      filePath,
+      filePath.split('/').pop()!.replace('.md', ''),
+      filePath,
+      typeName,
+    );
+    db.prepare('INSERT INTO node_types (node_id, schema_type) VALUES (?, ?)').run(filePath, typeName);
+  }
+
+  it('returns template when >=80% of nodes are in the same directory', () => {
+    insertNode('Meetings/standup.md', 'meeting');
+    insertNode('Meetings/retro.md', 'meeting');
+    insertNode('Meetings/planning.md', 'meeting');
+    insertNode('Meetings/review.md', 'meeting');
+    insertNode('Notes/offsite-notes.md', 'meeting');
+
+    const result = inferFilenameTemplate(db, 'meeting', []);
+    expect(result).toBe('Meetings/{{title}}.md');
+  });
+
+  it('returns null when no directory has >=80%', () => {
+    insertNode('Meetings/standup.md', 'meeting');
+    insertNode('Meetings/retro.md', 'meeting');
+    insertNode('Notes/planning.md', 'meeting');
+    insertNode('Archive/review.md', 'meeting');
+    insertNode('Other/misc.md', 'meeting');
+
+    const result = inferFilenameTemplate(db, 'meeting', []);
+    expect(result).toBeNull();
+  });
+
+  it('handles nested directories using full dirname', () => {
+    insertNode('TaskNotes/Tasks/review.md', 'task');
+    insertNode('TaskNotes/Tasks/deploy.md', 'task');
+    insertNode('TaskNotes/Tasks/bugfix.md', 'task');
+    insertNode('TaskNotes/Tasks/refactor.md', 'task');
+    insertNode('TaskNotes/Tasks/test.md', 'task');
+
+    const result = inferFilenameTemplate(db, 'task', []);
+    expect(result).toBe('TaskNotes/Tasks/{{title}}.md');
+  });
+
+  it('returns date-prefixed template when >50% match date pattern and date field exists', () => {
+    insertNode('Meetings/2026-03-01-standup.md', 'meeting');
+    insertNode('Meetings/2026-03-02-retro.md', 'meeting');
+    insertNode('Meetings/2026-03-03-planning.md', 'meeting');
+    insertNode('Meetings/review.md', 'meeting');
+
+    const inferredFields = [{ key: 'date', inferred_type: 'reference' as const, frequency: 1, distinct_values: 3, sample_values: [], enum_candidate: false }];
+    const result = inferFilenameTemplate(db, 'meeting', inferredFields);
+    expect(result).toBe('Meetings/{{date}}-{{title}}.md');
+  });
+
+  it('returns plain template when date pattern detected but no date field', () => {
+    insertNode('Meetings/2026-03-01-standup.md', 'meeting');
+    insertNode('Meetings/2026-03-02-retro.md', 'meeting');
+    insertNode('Meetings/2026-03-03-planning.md', 'meeting');
+    insertNode('Meetings/review.md', 'meeting');
+
+    const result = inferFilenameTemplate(db, 'meeting', []);
+    expect(result).toBe('Meetings/{{title}}.md');
+  });
+
+  it('returns plain template when <50% match date pattern even with date field', () => {
+    insertNode('Meetings/2026-03-01-standup.md', 'meeting');
+    insertNode('Meetings/retro.md', 'meeting');
+    insertNode('Meetings/planning.md', 'meeting');
+    insertNode('Meetings/review.md', 'meeting');
+
+    const inferredFields = [{ key: 'date', inferred_type: 'reference' as const, frequency: 1, distinct_values: 1, sample_values: [], enum_candidate: false }];
+    const result = inferFilenameTemplate(db, 'meeting', inferredFields);
+    expect(result).toBe('Meetings/{{title}}.md');
+  });
+
+  it('handles root-level dominant directory (empty dirname)', () => {
+    insertNode('standup.md', 'meeting');
+    insertNode('retro.md', 'meeting');
+    insertNode('planning.md', 'meeting');
+    insertNode('review.md', 'meeting');
+    insertNode('Meetings/offsite.md', 'meeting');
+
+    const result = inferFilenameTemplate(db, 'meeting', []);
+    expect(result).toBe('{{title}}.md');
+  });
+});
 
 describe('analyzeVault', () => {
   let db: Database.Database;

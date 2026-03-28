@@ -4,6 +4,10 @@ import { getAllSchemas } from '../schema/loader.js';
 import type { ResolvedSchema } from '../schema/types.js';
 import type { InferredField, InferenceResult, TypeAnalysis, Discrepancy } from './types.js';
 
+const DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}[- ]/;
+const DIR_DOMINANCE_THRESHOLD = 0.8;
+const DATE_PATTERN_THRESHOLD = 0.5;
+
 interface FieldRow {
   value_type: string;
   value_text: string;
@@ -96,6 +100,70 @@ export function inferFieldType(
 
   // Priority 8: plain string
   return { ...base, inferred_type: 'string', enum_candidate: false };
+}
+
+/**
+ * Infer a filename_template for a type based on directory frequency
+ * and date-prefix patterns in existing file paths.
+ */
+export function inferFilenameTemplate(
+  db: Database.Database,
+  typeName: string,
+  inferredFields: InferredField[],
+): string | null {
+  // Query all file paths for this type
+  const rows = db.prepare(
+    `SELECT n.file_path FROM nodes n
+     JOIN node_types nt ON n.id = nt.node_id
+     WHERE nt.schema_type = ?`
+  ).all(typeName) as Array<{ file_path: string }>;
+
+  if (rows.length === 0) return null;
+
+  // Count directory frequencies
+  const dirCounts = new Map<string, number>();
+  for (const row of rows) {
+    const lastSlash = row.file_path.lastIndexOf('/');
+    const dir = lastSlash === -1 ? '' : row.file_path.slice(0, lastSlash);
+    dirCounts.set(dir, (dirCounts.get(dir) ?? 0) + 1);
+  }
+
+  // Find dominant directory
+  let topDir = '';
+  let topCount = 0;
+  for (const [dir, count] of dirCounts) {
+    if (count > topCount) {
+      topDir = dir;
+      topCount = count;
+    }
+  }
+
+  // Dominance check
+  if (topCount / rows.length < DIR_DOMINANCE_THRESHOLD) return null;
+
+  // Date pattern detection — only if type has a date field
+  const hasDateField = inferredFields.some(f => f.key === 'date');
+  if (hasDateField) {
+    const filesInDir = rows.filter(r => {
+      const lastSlash = r.file_path.lastIndexOf('/');
+      const dir = lastSlash === -1 ? '' : r.file_path.slice(0, lastSlash);
+      return dir === topDir;
+    });
+
+    const dateCount = filesInDir.filter(r => {
+      const filename = r.file_path.slice(topDir.length > 0 ? topDir.length + 1 : 0);
+      return DATE_PREFIX_RE.test(filename);
+    }).length;
+
+    if (filesInDir.length > 0 && dateCount / filesInDir.length > DATE_PATTERN_THRESHOLD) {
+      if (topDir === '') return '{{date}}-{{title}}.md';
+      return `${topDir}/{{date}}-{{title}}.md`;
+    }
+  }
+
+  // Plain template
+  if (topDir === '') return '{{title}}.md';
+  return `${topDir}/{{title}}.md`;
 }
 
 /**
