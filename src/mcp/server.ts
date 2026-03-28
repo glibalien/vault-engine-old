@@ -1055,7 +1055,7 @@ export function createServer(
     'get-node',
     'Get full details of a specific node by its ID (vault-relative file path) or title',
     {
-      node_id: z.string().optional()
+      node_id: z.string().min(1).optional()
         .describe('Vault-relative file path, e.g. "tasks/review.md"'),
       title: z.string().optional()
         .describe('Node title for lookup, e.g. "Review PR". Resolved via wiki-link resolution logic. Use when you know the name but not the directory.'),
