@@ -22,10 +22,6 @@ export class SqliteClientsStore implements OAuthRegisteredClientsStore {
     if (!row) return undefined;
 
     const metadata = JSON.parse(row.metadata);
-    // Restore URL objects for redirect_uris (stored as strings in JSON)
-    if (metadata.redirect_uris) {
-      metadata.redirect_uris = metadata.redirect_uris.map((u: string) => new URL(u));
-    }
 
     return {
       ...metadata,

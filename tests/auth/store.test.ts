@@ -28,7 +28,7 @@ describe('SqliteClientsStore', () => {
     const input = {
       client_secret: 'test-secret-abc123',
       client_secret_expires_at: Math.floor(Date.now() / 1000) + 86400,
-      redirect_uris: [new URL('https://example.com/callback')],
+      redirect_uris: ['https://example.com/callback'],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       token_endpoint_auth_method: 'client_secret_post',
@@ -42,19 +42,19 @@ describe('SqliteClientsStore', () => {
     expect(registered.client_id_issued_at).toBeDefined();
     expect(registered.client_secret).toBe('test-secret-abc123');
     expect(registered.client_name).toBe('Test Client');
-    expect(registered.redirect_uris).toEqual([new URL('https://example.com/callback')]);
+    expect(registered.redirect_uris).toEqual(['https://example.com/callback']);
 
     const retrieved = await store.getClient(registered.client_id);
     expect(retrieved).toBeDefined();
     expect(retrieved!.client_id).toBe(registered.client_id);
     expect(retrieved!.client_secret).toBe('test-secret-abc123');
     expect(retrieved!.client_name).toBe('Test Client');
-    expect(retrieved!.redirect_uris).toEqual([new URL('https://example.com/callback')]);
+    expect(retrieved!.redirect_uris).toEqual(['https://example.com/callback']);
   });
 
   it('registers a public client without secret', async () => {
     const input = {
-      redirect_uris: [new URL('https://example.com/callback')],
+      redirect_uris: ['https://example.com/callback'],
       grant_types: ['authorization_code'],
       response_types: ['code'],
       token_endpoint_auth_method: 'none',

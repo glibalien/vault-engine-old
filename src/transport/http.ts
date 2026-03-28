@@ -1,10 +1,20 @@
-import express, { type Express, type Request, type Response, type NextFunction } from 'express';
+import express, { type Express, type Request, type Response, type NextFunction, type RequestHandler } from 'express';
 import { createServer as createNodeHttpServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type Database from 'better-sqlite3';
+import { mcpAuthRouter } from '@modelcontextprotocol/sdk/server/auth/router.js';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { VaultOAuthProvider } from '../auth/provider.js';
 
 export type ServerFactory = () => McpServer;
+
+export interface AuthConfig {
+  db: Database.Database;
+  ownerPassword: string;
+  issuerUrl: URL;
+}
 
 function requestLogger(req: Request, res: Response, next: NextFunction): void {
   const start = Date.now();
@@ -15,12 +25,37 @@ function requestLogger(req: Request, res: Response, next: NextFunction): void {
   next();
 }
 
-export function createHttpApp(serverFactory: ServerFactory): Express {
+export function createHttpApp(serverFactory: ServerFactory, authConfig?: AuthConfig): Express {
   const sessions = new Map<string, StreamableHTTPServerTransport>();
   const app = express();
 
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
   app.use(requestLogger);
+
+  // Set up OAuth if auth config provided
+  let bearerAuth: RequestHandler = (_req, _res, next) => { next(); };
+
+  if (authConfig) {
+    const provider = new VaultOAuthProvider(authConfig.db, authConfig.ownerPassword, authConfig.issuerUrl);
+
+    app.use(mcpAuthRouter({
+      provider,
+      issuerUrl: authConfig.issuerUrl,
+      authorizationOptions: {
+        rateLimit: { windowMs: 60_000, max: 5 },
+      },
+    }));
+
+    bearerAuth = requireBearerAuth({ verifier: provider });
+  }
+
+  // Conditional auth middleware for /mcp: skip HEAD and sessionless GET (protocol discovery)
+  app.use('/mcp', (req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'HEAD') return next();
+    if (req.method === 'GET' && !req.headers['mcp-session-id']) return next();
+    bearerAuth(req, res, next);
+  });
 
   app.post('/mcp', async (req: Request, res: Response) => {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -105,8 +140,9 @@ export function createHttpApp(serverFactory: ServerFactory): Express {
 export async function startHttpTransport(
   serverFactory: ServerFactory,
   port: number,
+  authConfig?: AuthConfig,
 ): Promise<{ app: Express; httpServer: Server }> {
-  const app = createHttpApp(serverFactory);
+  const app = createHttpApp(serverFactory, authConfig);
 
   return new Promise((resolve) => {
     const httpServer = createNodeHttpServer(app);
