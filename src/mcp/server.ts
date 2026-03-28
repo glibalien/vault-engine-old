@@ -25,6 +25,7 @@ import { resolveEmbeds } from '../attachments/resolver.js';
 import { readImage, readAudio, readDocument } from '../attachments/readers.js';
 import type { ImageContent, TextContent } from '../attachments/types.js';
 import { normalizeFields } from './normalize-fields.js';
+import { buildQuerySql } from './query-builder.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -273,12 +274,14 @@ export function createServer(
     fields?: Record<string, unknown>;
     body?: string;
     append_body?: string;
+    types?: string[];
+    title?: string;
   }, deferredLocks?: Set<string>) {
-    const { node_id, fields: fieldUpdates, body: newBody, append_body } = params;
+    const { node_id, fields: fieldUpdates, body: newBody, append_body, types: newTypes, title: newTitle } = params;
 
     // Param validation
-    if (!fieldUpdates && newBody === undefined && append_body === undefined) {
-      return toolError('No updates provided: at least one of fields, body, or append_body is required', 'VALIDATION_ERROR');
+    if (!fieldUpdates && newBody === undefined && append_body === undefined && newTypes === undefined && newTitle === undefined) {
+      return toolError('No updates provided: at least one of fields, body, append_body, types, or title is required', 'VALIDATION_ERROR');
     }
     if (newBody !== undefined && append_body !== undefined) {
       return toolError('Cannot provide both body and append_body — they are mutually exclusive', 'VALIDATION_ERROR');
@@ -302,11 +305,15 @@ export function createServer(
     // Parse existing file
     const parsed = parseFile(node_id, raw);
 
-    // Extract title and types (immutable in update-node)
-    const title = typeof parsed.frontmatter.title === 'string'
-      ? parsed.frontmatter.title
-      : node_id.replace(/\.md$/, '').split('/').pop()!;
-    const types = parsed.types;
+    // Title: use provided value, else existing frontmatter, else filename stem
+    const title = newTitle !== undefined
+      ? newTitle
+      : typeof parsed.frontmatter.title === 'string'
+        ? parsed.frontmatter.title
+        : node_id.replace(/\.md$/, '').split('/').pop()!;
+
+    // Types: use provided value, else existing
+    const types = newTypes !== undefined ? newTypes : parsed.types;
 
     // Merge fields: existing (excluding meta-keys) + updates
     const mergedFields: Record<string, unknown> = {};
@@ -1203,110 +1210,13 @@ export function createServer(
       }
 
       try {
-        const joins: string[] = [];
-        const conditions: string[] = [];
-        const params: unknown[] = [];
-
-        // FTS path
-        let selectFrom: string;
-        let defaultOrder: string;
-        if (full_text) {
-          selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at, fts.rank
-            FROM nodes_fts fts
-            JOIN nodes n ON n.rowid = fts.rowid`;
-          conditions.push('nodes_fts MATCH ?');
-          params.push(full_text);
-          defaultOrder = 'fts.rank';
-        } else {
-          selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
-            FROM nodes n`;
-          defaultOrder = 'n.updated_at DESC';
-        }
-
-        // Type filter
-        if (schema_type) {
-          joins.push('JOIN node_types nt ON nt.node_id = n.id');
-          conditions.push('nt.schema_type = ?');
-          params.push(schema_type);
-        }
-
-        // Field filters with comparison operators
-        if (filters) {
-          for (let i = 0; i < filters.length; i++) {
-            const { field, operator, value } = filters[i];
-            const alias = `f${i}`;
-            joins.push(`JOIN fields ${alias} ON ${alias}.node_id = n.id`);
-
-            switch (operator) {
-              case 'eq':
-                conditions.push(`${alias}.key = ? AND ${alias}.value_text = ?`);
-                params.push(field, String(value));
-                break;
-              case 'neq':
-                conditions.push(`${alias}.key = ? AND ${alias}.value_text != ?`);
-                params.push(field, String(value));
-                break;
-              case 'gt':
-              case 'lt':
-              case 'gte':
-              case 'lte': {
-                const sqlOp = { gt: '>', lt: '<', gte: '>=', lte: '<=' }[operator];
-                conditions.push(
-                  `${alias}.key = ? AND CASE ${alias}.value_type ` +
-                  `WHEN 'number' THEN ${alias}.value_number ${sqlOp} ? ` +
-                  `WHEN 'date' THEN ${alias}.value_date ${sqlOp} ? ` +
-                  `ELSE ${alias}.value_text ${sqlOp} ? END`,
-                );
-                params.push(field, value, value, value);
-                break;
-              }
-              case 'contains': {
-                const escaped = String(value).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-                conditions.push(`${alias}.key = ? AND ${alias}.value_text LIKE '%' || ? || '%' ESCAPE '\\'`);
-                params.push(field, escaped);
-                break;
-              }
-              case 'in': {
-                const vals = Array.isArray(value) ? value : [value];
-                if (vals.length === 0) {
-                  conditions.push('0'); // Always false — empty IN set matches nothing
-                  break;
-                }
-                const placeholders = vals.map(() => '?').join(', ');
-                conditions.push(`${alias}.key = ? AND ${alias}.value_text IN (${placeholders})`);
-                params.push(field, ...vals.map(String));
-                break;
-              }
-            }
-          }
-        }
-
-        // Order by
-        let orderClause: string;
-        if (order_by && !full_text) {
-          // Parse "field_name ASC" or "field_name DESC" or just "field_name"
-          const parts = order_by.trim().split(/\s+/);
-          const fieldName = parts[0];
-          const direction = parts[1]?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-          if (fieldName === 'updated_at') {
-            orderClause = `n.updated_at ${direction}`;
-          } else {
-            // Order by a field value — join fields table
-            joins.push('LEFT JOIN fields f_order ON f_order.node_id = n.id AND f_order.key = ?');
-            params.push(fieldName);
-            orderClause = `f_order.value_text ${direction}`;
-          }
-        } else {
-          orderClause = defaultOrder;
-        }
-
-        params.push(limit);
-
-        const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-        const sql = `${selectFrom}\n${joins.join('\n')}\n${where}\nORDER BY ${orderClause}\nLIMIT ?`;
+        const { sql, params } = buildQuerySql({
+          schema_type,
+          full_text,
+          filters,
+          order_by,
+          limit,
+        });
 
         const rows = db.prepare(sql).all(...params) as Array<{
           id: string; file_path: string; node_type: string; title: string | null;
@@ -1448,7 +1358,7 @@ export function createServer(
 
   server.tool(
     'update-node',
-    'Update an existing node\'s fields and/or body content. Fields are merged (not replaced); set a field to null to remove it.',
+    'Update an existing node\'s fields, body, types, and/or title. Fields are merged (not replaced); set a field to null to remove it. Setting title here only changes frontmatter — it does NOT rename the file or update wiki-link references (use rename-node for that).',
     {
       node_id: z.string().min(1).describe('Vault-relative file path of the node to update, e.g. "tasks/review.md"'),
       fields: z.record(z.string(), z.unknown()).optional()
@@ -1457,6 +1367,10 @@ export function createServer(
         .describe('Replace the entire body content'),
       append_body: z.string().optional()
         .describe('Append to existing body content'),
+      types: z.array(z.string()).optional()
+        .describe('Replace the node\'s types array. Pass the full desired array.'),
+      title: z.string().optional()
+        .describe('Update the node\'s title in frontmatter. Does NOT rename the file or update wiki-link references — use rename-node for that.'),
     },
     async (params) => {
       if (hasPathTraversal(params.node_id)) {
