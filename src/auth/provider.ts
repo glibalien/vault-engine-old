@@ -9,7 +9,7 @@ import type {
   OAuthTokenRevocationRequest,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { SqliteClientsStore } from './store.js';
 
 export const ACCESS_TOKEN_TTL = 3600;       // 1 hour
@@ -211,22 +211,87 @@ export class VaultOAuthProvider implements OAuthServerProvider {
   }
 
   async exchangeRefreshToken(
-    _client: OAuthClientInformationFull,
-    _refreshToken: string,
+    client: OAuthClientInformationFull,
+    refreshToken: string,
     _scopes?: string[],
-    _resource?: URL,
+    resource?: URL,
   ): Promise<OAuthTokens> {
-    throw new Error('Not implemented');
+    const tokenHash = hashToken(refreshToken);
+    const now = Math.floor(Date.now() / 1000);
+
+    const row = this.db.prepare(
+      'SELECT * FROM oauth_tokens WHERE token = ? AND type = \'refresh\' AND revoked = 0 AND expires_at > ?',
+    ).get(tokenHash, now) as TokenRow | undefined;
+
+    if (!row || row.client_id !== client.client_id) {
+      throw new InvalidGrantError('Invalid or expired refresh token');
+    }
+
+    // Revoke old refresh token
+    this.db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE token = ?').run(tokenHash);
+
+    // Generate new tokens
+    const newAccessToken = randomBytes(32).toString('hex');
+    const newRefreshToken = randomBytes(32).toString('hex');
+    const tokenResource = resource?.toString() ?? row.resource;
+
+    this.db.prepare(`
+      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+      VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
+    `).run(hashToken(newAccessToken), client.client_id, row.scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+
+    this.db.prepare(`
+      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+      VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
+    `).run(hashToken(newRefreshToken), client.client_id, row.scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+
+    return {
+      access_token: newAccessToken,
+      token_type: 'bearer',
+      expires_in: ACCESS_TOKEN_TTL,
+      refresh_token: newRefreshToken,
+    };
   }
 
-  async verifyAccessToken(_token: string): Promise<AuthInfo> {
-    throw new Error('Not implemented');
+  async verifyAccessToken(token: string): Promise<AuthInfo> {
+    const tokenHash = hashToken(token);
+    const now = Math.floor(Date.now() / 1000);
+
+    const row = this.db.prepare(
+      'SELECT * FROM oauth_tokens WHERE token = ? AND type = \'access\' AND revoked = 0 AND expires_at > ?',
+    ).get(tokenHash, now) as TokenRow | undefined;
+
+    if (!row) {
+      throw new InvalidTokenError('Invalid or expired access token');
+    }
+
+    return {
+      token,
+      clientId: row.client_id,
+      scopes: row.scopes ? row.scopes.split(' ').filter(Boolean) : [],
+      expiresAt: row.expires_at,
+    };
   }
 
   async revokeToken(
-    _client: OAuthClientInformationFull,
-    _request: OAuthTokenRevocationRequest,
+    client: OAuthClientInformationFull,
+    request: OAuthTokenRevocationRequest,
   ): Promise<void> {
-    throw new Error('Not implemented');
+    const tokenHash = hashToken(request.token);
+
+    const row = this.db.prepare(
+      'SELECT * FROM oauth_tokens WHERE token = ?',
+    ).get(tokenHash) as TokenRow | undefined;
+
+    if (!row || row.client_id !== client.client_id) return;
+
+    this.db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE token = ?').run(tokenHash);
+
+    // Cascade: revoking a refresh token also revokes all access tokens for the client
+    if (row.type === 'refresh') {
+      this.db.prepare(
+        'UPDATE oauth_tokens SET revoked = 1 WHERE client_id = ? AND type = \'access\' AND revoked = 0',
+      ).run(client.client_id);
+    }
   }
 }

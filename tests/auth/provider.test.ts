@@ -209,4 +209,142 @@ describe('VaultOAuthProvider', () => {
       ).rejects.toThrow();
     });
   });
+
+  describe('exchangeRefreshToken', () => {
+    async function insertTokenPair(): Promise<{ accessToken: string; refreshToken: string }> {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, scopes, resource, state, created_at, expires_at)
+        VALUES ('setup-code', 'test-client-id', 'https://example.com/callback', 'challenge', '', NULL, NULL, ?, ?)
+      `).run(now, now + 600);
+      const tokens = await provider.exchangeAuthorizationCode(
+        makeClient(), 'setup-code', undefined, 'https://example.com/callback',
+      );
+      return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token! };
+    }
+
+    it('returns new token pair and rotates refresh token', async () => {
+      const { refreshToken } = await insertTokenPair();
+      const newTokens = await provider.exchangeRefreshToken(makeClient(), refreshToken);
+
+      expect(newTokens.access_token).toBeDefined();
+      expect(newTokens.refresh_token).toBeDefined();
+      expect(newTokens.access_token).not.toBe(refreshToken);
+      expect(newTokens.refresh_token).not.toBe(refreshToken);
+      expect(newTokens.token_type).toBe('bearer');
+      expect(newTokens.expires_in).toBe(3600);
+    });
+
+    it('revokes old refresh token after rotation', async () => {
+      const { refreshToken } = await insertTokenPair();
+      await provider.exchangeRefreshToken(makeClient(), refreshToken);
+
+      await expect(
+        provider.exchangeRefreshToken(makeClient(), refreshToken),
+      ).rejects.toThrow();
+    });
+
+    it('rejects unknown refresh token', async () => {
+      await expect(
+        provider.exchangeRefreshToken(makeClient(), 'nonexistent-token'),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('verifyAccessToken', () => {
+    async function createAccessToken(): Promise<string> {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, scopes, resource, state, created_at, expires_at)
+        VALUES ('verify-code', 'test-client-id', 'https://example.com/callback', 'challenge', 'read write', NULL, NULL, ?, ?)
+      `).run(now, now + 600);
+      const tokens = await provider.exchangeAuthorizationCode(
+        makeClient(), 'verify-code', undefined, 'https://example.com/callback',
+      );
+      return tokens.access_token;
+    }
+
+    it('returns AuthInfo for valid token', async () => {
+      const token = await createAccessToken();
+      const authInfo = await provider.verifyAccessToken(token);
+
+      expect(authInfo.token).toBe(token);
+      expect(authInfo.clientId).toBe('test-client-id');
+      expect(authInfo.scopes).toEqual(['read', 'write']);
+      expect(authInfo.expiresAt).toBeDefined();
+    });
+
+    it('rejects unknown token', async () => {
+      await expect(provider.verifyAccessToken('nonexistent')).rejects.toThrow();
+    });
+
+    it('rejects expired token', async () => {
+      const { hashToken } = await import('../../src/auth/provider.js');
+      const token = 'expired-access-token';
+      const past = Math.floor(Date.now() / 1000) - 1000;
+      db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', 'test-client-id', '', NULL, ?, ?, 0)
+      `).run(hashToken(token), past - 3600, past);
+
+      await expect(provider.verifyAccessToken(token)).rejects.toThrow();
+    });
+
+    it('rejects revoked token', async () => {
+      const { hashToken } = await import('../../src/auth/provider.js');
+      const token = 'revoked-access-token';
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', 'test-client-id', '', NULL, ?, ?, 1)
+      `).run(hashToken(token), now, now + 3600);
+
+      await expect(provider.verifyAccessToken(token)).rejects.toThrow();
+    });
+  });
+
+  describe('revokeToken', () => {
+    it('marks token as revoked', async () => {
+      const { hashToken } = await import('../../src/auth/provider.js');
+      const token = 'token-to-revoke';
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', 'test-client-id', '', NULL, ?, ?, 0)
+      `).run(hashToken(token), now, now + 3600);
+
+      await provider.revokeToken!(makeClient(), { token });
+
+      const row = db.prepare('SELECT revoked FROM oauth_tokens WHERE token = ?').get(hashToken(token)) as { revoked: number };
+      expect(row.revoked).toBe(1);
+    });
+
+    it('cascades revocation from refresh to access tokens', async () => {
+      const { hashToken } = await import('../../src/auth/provider.js');
+      const now = Math.floor(Date.now() / 1000);
+
+      db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'refresh', 'test-client-id', '', NULL, ?, ?, 0)
+      `).run(hashToken('my-refresh'), now, now + 2592000);
+
+      db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', 'test-client-id', '', NULL, ?, ?, 0)
+      `).run(hashToken('my-access'), now, now + 3600);
+
+      await provider.revokeToken!(makeClient(), { token: 'my-refresh' });
+
+      const refreshRow = db.prepare('SELECT revoked FROM oauth_tokens WHERE token = ?').get(hashToken('my-refresh')) as { revoked: number };
+      const accessRow = db.prepare('SELECT revoked FROM oauth_tokens WHERE token = ?').get(hashToken('my-access')) as { revoked: number };
+      expect(refreshRow.revoked).toBe(1);
+      expect(accessRow.revoked).toBe(1);
+    });
+
+    it('silently succeeds for unknown token', async () => {
+      await expect(
+        provider.revokeToken!(makeClient(), { token: 'nonexistent' }),
+      ).resolves.toBeUndefined();
+    });
+  });
 });
