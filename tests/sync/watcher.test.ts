@@ -202,6 +202,54 @@ describe('watchVault', () => {
     expect(node.file_path).toBe('notes/deep.md');
   });
 
+  it('detects new files when .git and .vault-engine dirs exist', async () => {
+    // Simulate production layout: .git/ and .vault-engine/ present in vault
+    mkdirSync(join(tmpVault, '.git', 'objects'), { recursive: true });
+    mkdirSync(join(tmpVault, '.git', 'refs'), { recursive: true });
+    writeFileSync(join(tmpVault, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(join(tmpVault, '.vault-engine'), { recursive: true });
+    writeFileSync(join(tmpVault, '.vault-engine', 'vault.db'), 'fake-db');
+
+    handle = watchVault(db, tmpVault);
+    await handle.ready;
+
+    writeFileSync(join(tmpVault, 'new-note.md'), '# New Note\nContent.');
+
+    await waitFor(() =>
+      db.prepare('SELECT * FROM nodes WHERE id = ?').get('new-note.md') !== undefined,
+    );
+
+    const node = db.prepare('SELECT * FROM nodes WHERE id = ?').get('new-note.md') as any;
+    expect(node).toBeDefined();
+    expect(node.content_text).toContain('New Note');
+  });
+
+  it('ignores changes inside .git and .vault-engine', async () => {
+    mkdirSync(join(tmpVault, '.git'), { recursive: true });
+    mkdirSync(join(tmpVault, '.vault-engine'), { recursive: true });
+
+    handle = watchVault(db, tmpVault);
+    await handle.ready;
+
+    // Write files inside ignored directories
+    writeFileSync(join(tmpVault, '.git', 'index'), 'binary-data');
+    writeFileSync(join(tmpVault, '.vault-engine', 'vault.db-wal'), 'wal-data');
+
+    // Write a real .md file to prove watcher is active
+    writeFileSync(join(tmpVault, 'real.md'), '# Real');
+
+    await waitFor(() =>
+      db.prepare('SELECT * FROM nodes WHERE id = ?').get('real.md') !== undefined,
+    );
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Only the .md file should be indexed
+    const allNodes = db.prepare('SELECT id FROM nodes').all() as any[];
+    expect(allNodes).toHaveLength(1);
+    expect(allNodes[0].id).toBe('real.md');
+  });
+
   it('skips re-index when file content unchanged (hash match)', async () => {
     handle = watchVault(db, tmpVault);
     await handle.ready;

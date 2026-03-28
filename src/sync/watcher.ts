@@ -1,11 +1,16 @@
 import { readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { relative, join } from 'node:path';
+import { relative, join, basename } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type Database from 'better-sqlite3';
 import { parseFile } from '../parser/index.js';
 import { indexFile, deleteFile } from './indexer.js';
 import { resolveReferences } from './resolver.js';
+
+// Directories to exclude from watching.
+// chokidar v5 treats string ignored patterns as exact matches (not globs),
+// so we use a function to properly filter directories by basename.
+const IGNORED_DIRS = new Set(['node_modules', '.git', '.vault-engine']);
 
 const writeLocks = new Set<string>();
 
@@ -49,22 +54,21 @@ export function watchVault(
   const debounceMs = opts?.debounceMs ?? 300;
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  const ignored: (string | RegExp)[] = [
-    '**/node_modules/**',
-    '**/.git/**',
-    ...(opts?.ignorePaths ?? []),
-  ];
+  const extraIgnored = new Set(opts?.ignorePaths ?? []);
 
   const watcher: FSWatcher = watch(vaultPath, {
     ignoreInitial: true,
-    ignored: [
-      ...ignored,
-      (path: string, stats?: import('node:fs').Stats) => {
-        if (!stats || stats.isDirectory()) return false;
-        return !path.endsWith('.md');
-      },
-    ],
+    ignored: (path: string, stats?: import('node:fs').Stats) => {
+      if (!stats) return false;
+      if (stats.isDirectory()) {
+        const name = basename(path);
+        return IGNORED_DIRS.has(name) || extraIgnored.has(name);
+      }
+      return !path.endsWith('.md');
+    },
   });
+
+  process.stderr.write(`[vault-engine] watcher: watching ${vaultPath}\n`);
 
   function debounced(relPath: string, action: () => void): void {
     const existing = timers.get(relPath);
@@ -98,6 +102,7 @@ export function watchVault(
           indexFile(db, parsed, rel, mtime, raw);
           resolveReferences(db);
         })();
+        process.stderr.write(`[vault-engine] watcher: indexed ${rel}\n`);
       } catch (err) {
         console.error(`[vault-engine] failed to index ${rel}:`, err);
       }
@@ -122,6 +127,7 @@ export function watchVault(
           deleteFile(db, rel);
           resolveReferences(db);
         })();
+        process.stderr.write(`[vault-engine] watcher: deleted ${rel}\n`);
       } catch (err) {
         console.error(`[vault-engine] failed to delete ${rel}:`, err);
       }
