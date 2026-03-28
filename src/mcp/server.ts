@@ -15,7 +15,7 @@ import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, dele
 import { indexFile, deleteFile } from '../sync/indexer.js';
 import { releaseWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
-import { resolveReferences } from '../sync/resolver.js';
+import { resolveReferences, buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
 import { analyzeVault } from '../inference/analyzer.js';
 import { generateSchemas, writeSchemaFiles } from '../inference/generator.js';
@@ -1053,25 +1053,50 @@ export function createServer(
 
   server.tool(
     'get-node',
-    'Get full details of a specific node by its ID (vault-relative file path)',
+    'Get full details of a specific node by its ID (vault-relative file path) or title',
     {
-      node_id: z.string().min(1).describe('Vault-relative file path, e.g. "tasks/review.md"'),
+      node_id: z.string().optional()
+        .describe('Vault-relative file path, e.g. "tasks/review.md"'),
+      title: z.string().optional()
+        .describe('Node title for lookup, e.g. "Review PR". Resolved via wiki-link resolution logic. Use when you know the name but not the directory.'),
       include_relationships: z.boolean().optional().default(false)
         .describe('Include incoming and outgoing relationships'),
       include_computed: z.boolean().optional().default(false)
         .describe('Include computed field values from schema definitions'),
     },
-    async ({ node_id, include_relationships, include_computed }) => {
-      if (hasPathTraversal(node_id)) {
+    async ({ node_id, title, include_relationships, include_computed }) => {
+      // Resolve node_id from title if needed
+      let resolvedId = node_id;
+      if (!resolvedId) {
+        if (!title) {
+          return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
+        }
+        const { titleMap, pathMap } = buildLookupMaps(db);
+        const resolved = resolveTargetWithMaps(title, titleMap, pathMap);
+        if (!resolved) {
+          // Distinguish not found vs ambiguous
+          const candidates = titleMap.get(title.toLowerCase());
+          if (candidates && candidates.length > 1) {
+            return toolError(
+              `Multiple nodes match title '${title}': ${candidates.join(', ')}`,
+              'VALIDATION_ERROR',
+            );
+          }
+          return toolError(`No node found with title '${title}'`, 'NOT_FOUND');
+        }
+        resolvedId = resolved;
+      }
+
+      if (hasPathTraversal(resolvedId)) {
         return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
       }
       const row = db.prepare(`
         SELECT id, file_path, node_type, title, content_text, content_md, updated_at
         FROM nodes WHERE id = ?
-      `).get(node_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
+      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
 
       if (!row) {
-        return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
+        return toolError(`Node not found: ${resolvedId}`, 'NOT_FOUND');
       }
 
       const [node] = hydrateNodes([row], { includeContentMd: true });
@@ -1081,7 +1106,7 @@ export function createServer(
           SELECT source_id, target_id, rel_type, context
           FROM relationships
           WHERE source_id = ? OR target_id = ?
-        `).all(node_id, node_id) as Array<{ source_id: string; target_id: string; rel_type: string; context: string | null }>;
+        `).all(resolvedId, resolvedId) as Array<{ source_id: string; target_id: string; rel_type: string; context: string | null }>;
 
         (node as Record<string, unknown>).relationships = rels;
       }
@@ -1096,7 +1121,7 @@ export function createServer(
           }
         }
         const computed = Object.keys(allComputedDefs).length > 0
-          ? evaluateComputed(db, node_id, allComputedDefs)
+          ? evaluateComputed(db, resolvedId, allComputedDefs)
           : {};
         (node as Record<string, unknown>).computed = computed;
       }

@@ -179,6 +179,73 @@ describe('MCP server', () => {
       const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
       expect(data.computed).toEqual({});
     });
+
+    it('resolves node by title', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { title: 'Review vendor proposals' },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.id).toBe('tasks/review.md');
+    });
+
+    it('returns error when title matches no node', async () => {
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { title: 'Nonexistent Node' },
+      });
+      expect(result.isError).toBe(true);
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.code).toBe('NOT_FOUND');
+      expect(data.error).toContain('Nonexistent Node');
+    });
+
+    it('returns error when title is ambiguous', async () => {
+      // Index two nodes with the same title
+      const md1 = '---\ntitle: Status\ntypes: [note]\n---\nAlpha status.';
+      const md2 = '---\ntitle: Status\ntypes: [note]\n---\nBeta status.';
+      const parsed1 = parseFile('projects/alpha/status.md', md1);
+      const parsed2 = parseFile('projects/beta/status.md', md2);
+      indexFile(db, parsed1, 'projects/alpha/status.md', '2025-03-10T00:00:00.000Z', md1);
+      indexFile(db, parsed2, 'projects/beta/status.md', '2025-03-10T00:00:00.000Z', md2);
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { title: 'Status' },
+      });
+      expect(result.isError).toBe(true);
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.code).toBe('VALIDATION_ERROR');
+      expect(data.error).toContain('projects/alpha/status.md');
+      expect(data.error).toContain('projects/beta/status.md');
+    });
+
+    it('returns error when neither node_id nor title provided', async () => {
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: {},
+      });
+      expect(result.isError).toBe(true);
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('node_id takes precedence over title', async () => {
+      indexFixture(db, 'sample-task.md', 'tasks/review.md');
+
+      const result = await client.callTool({
+        name: 'get-node',
+        arguments: { node_id: 'tasks/review.md', title: 'Some Other Title' },
+      });
+
+      expect(result.isError).toBeFalsy();
+      const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      expect(data.id).toBe('tasks/review.md');
+    });
   });
 
   describe('get-recent', () => {
