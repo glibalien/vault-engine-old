@@ -25,6 +25,7 @@ import { resolveEmbeds } from '../attachments/resolver.js';
 import { readImage, readAudio, readDocument } from '../attachments/readers.js';
 import type { ImageContent, TextContent } from '../attachments/types.js';
 import { normalizeFields } from './normalize-fields.js';
+import { findDuplicates } from './duplicates.js';
 import { buildQuerySql } from './query-builder.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
@@ -2132,6 +2133,29 @@ export function createServer(
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return toolError(message, 'INTERNAL_ERROR');
+      }
+    },
+  );
+
+  server.tool(
+    'find-duplicates',
+    'Find nodes with similar or identical titles. Useful for vault hygiene and deduplication.',
+    {
+      schema_type: z.string().min(1).optional()
+        .describe('Scope detection to a specific type, e.g. "meeting", "task"'),
+      include_fields: z.boolean().optional().default(false)
+        .describe('Layer in field overlap scoring for more accurate results'),
+      threshold: z.number().min(0).max(1).optional().default(0.8)
+        .describe('Minimum similarity score (0.0–1.0) to report as duplicate'),
+      limit: z.number().int().min(1).optional().default(50)
+        .describe('Maximum number of duplicate groups to return'),
+    },
+    async ({ schema_type, include_fields, threshold, limit }) => {
+      try {
+        const result = findDuplicates(db, { schema_type, include_fields, threshold, limit });
+        return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+      } catch (err) {
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
       }
     },
   );
