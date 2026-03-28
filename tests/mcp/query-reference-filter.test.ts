@@ -120,4 +120,48 @@ describe('query-nodes reference field filtering', () => {
     expect(data).toHaveLength(1);
     expect(data[0].id).toBe('tasks/task-a.md');
   });
+
+  describe('references filter', () => {
+    it('outgoing: finds nodes that link to a target', async () => {
+      const result = await callQuery({
+        references: { target: 'Alice' },
+      });
+
+      const data = parseResult(result);
+      const ids = data.map((n: { id: string }) => n.id).sort();
+      expect(ids).toContain('tasks/task-a.md');
+      expect(ids).toContain('meetings/standup.md');
+    });
+
+    it('outgoing with rel_type: narrows by relationship type', async () => {
+      const result = await callQuery({
+        references: { target: 'Alice', rel_type: 'assignee' },
+      });
+
+      const data = parseResult(result);
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('tasks/task-a.md');
+    });
+
+    it('incoming: finds nodes that a source links to', async () => {
+      const result = await callQuery({
+        references: { target: 'tasks/task-a.md', direction: 'incoming' },
+      });
+
+      // task-a links to Alice (unresolved, not a node), so nothing returned
+      const data = parseResult(result);
+      expect(data).toHaveLength(0);
+    });
+
+    it('composable with schema_type', async () => {
+      const result = await callQuery({
+        schema_type: 'task',
+        references: { target: 'Alice' },
+      });
+
+      const data = parseResult(result);
+      expect(data).toHaveLength(1);
+      expect(data[0].id).toBe('tasks/task-a.md');
+    });
+  });
 });

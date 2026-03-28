@@ -15,17 +15,17 @@ export interface QueryOptions {
   filters?: QueryFilter[];
   order_by?: string;
   limit: number;
-  /** Future: filter by updated_at >= since */
+  /** Filter by updated_at > since (ISO datetime string) */
   since?: string;
-  /** Future: filter by node id path prefix */
+  /** Filter by node id path prefix (e.g. "tasks/") */
   path_prefix?: string;
-  /** Future: filter by relationship references */
+  /** Filter by relationship references */
   references?: {
     target: string;
     rel_type?: string;
     direction?: 'outgoing' | 'incoming' | 'both';
   };
-  /** Future: pre-resolved target id for references filter */
+  /** Pre-resolved target id for references filter */
   resolvedTargetId?: string | null;
   /** Select mode: 'full' returns all columns, 'id-only' returns just n.id */
   select?: 'full' | 'id-only';
@@ -145,6 +145,77 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
           break;
         }
       }
+    }
+  }
+
+  // Since filter
+  if (opts.since) {
+    conditions.push('n.updated_at > ?');
+    conditionParams.push(opts.since);
+  }
+
+  // Path prefix filter
+  if (opts.path_prefix) {
+    const prefix = opts.path_prefix.endsWith('/') ? opts.path_prefix : opts.path_prefix + '/';
+    conditions.push("n.id LIKE ? || '%'");
+    conditionParams.push(prefix);
+  }
+
+  // References filter
+  if (opts.references) {
+    const ref = opts.references;
+    const direction = ref.direction ?? 'outgoing';
+    const resolvedId = opts.resolvedTargetId;
+    const rawTarget = ref.target;
+
+    if (direction === 'outgoing') {
+      let refJoin = 'JOIN relationships r_ref ON r_ref.source_id = n.id AND (';
+      if (resolvedId) {
+        refJoin += 'r_ref.resolved_target_id = ? OR (r_ref.resolved_target_id IS NULL AND LOWER(r_ref.target_id) = LOWER(?))';
+        joinParams.push(resolvedId, rawTarget);
+      } else {
+        refJoin += 'LOWER(r_ref.target_id) = LOWER(?)';
+        joinParams.push(rawTarget);
+      }
+      refJoin += ')';
+      if (ref.rel_type) {
+        refJoin += ' AND r_ref.rel_type = ?';
+        joinParams.push(ref.rel_type);
+      }
+      joins.push(refJoin);
+    } else if (direction === 'incoming') {
+      const sourceId = resolvedId ?? rawTarget;
+      let refJoin = 'JOIN relationships r_ref ON r_ref.source_id = ? AND r_ref.resolved_target_id = n.id';
+      joinParams.push(sourceId);
+      if (ref.rel_type) {
+        refJoin += ' AND r_ref.rel_type = ?';
+        joinParams.push(ref.rel_type);
+      }
+      joins.push(refJoin);
+    } else {
+      // both: use EXISTS with OR
+      let existsClause = 'EXISTS (SELECT 1 FROM relationships r_ref WHERE ';
+      const existsParams: unknown[] = [];
+
+      if (resolvedId) {
+        existsClause += '(r_ref.source_id = n.id AND (r_ref.resolved_target_id = ? OR (r_ref.resolved_target_id IS NULL AND LOWER(r_ref.target_id) = LOWER(?))))';
+        existsParams.push(resolvedId, rawTarget);
+        existsClause += ' OR (r_ref.source_id = ? AND r_ref.resolved_target_id = n.id)';
+        existsParams.push(resolvedId);
+      } else {
+        existsClause += '(r_ref.source_id = n.id AND LOWER(r_ref.target_id) = LOWER(?))';
+        existsParams.push(rawTarget);
+      }
+
+      if (ref.rel_type) {
+        // Wrap existing conditions and add rel_type check
+        existsClause = 'EXISTS (SELECT 1 FROM relationships r_ref WHERE r_ref.rel_type = ? AND (' +
+          existsClause.replace('EXISTS (SELECT 1 FROM relationships r_ref WHERE ', '') + ')';
+        existsParams.unshift(ref.rel_type);
+      }
+      existsClause += ')';
+      conditions.push(existsClause);
+      conditionParams.push(...existsParams);
     }
   }
 

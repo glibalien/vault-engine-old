@@ -15,7 +15,7 @@ import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, dele
 import { indexFile, deleteFile } from '../sync/indexer.js';
 import { releaseWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
-import { resolveReferences, buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
+import { resolveReferences, resolveTarget, buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
 import { analyzeVault } from '../inference/analyzer.js';
 import { generateSchemas, writeSchemaFiles } from '../inference/generator.js';
@@ -1203,19 +1203,39 @@ export function createServer(
         .describe('Maximum number of results (default 20)'),
       order_by: z.string().min(1).optional()
         .describe('Sort field + direction, e.g. "updated_at DESC", "due_date ASC". Default: updated_at DESC (or FTS rank when full_text is used)'),
+      references: z.object({
+        target: z.string().min(1).describe('Node title or ID to find relationships for'),
+        rel_type: z.string().min(1).optional().describe('Filter by relationship type (field name or "wiki-link")'),
+        direction: z.enum(['outgoing', 'incoming', 'both']).optional().default('outgoing')
+          .describe('outgoing = nodes linking TO target; incoming = nodes target links TO; both = either'),
+      }).optional()
+        .describe('Filter by relationship — find nodes connected to a target node'),
     },
-    async ({ schema_type, full_text, filters, limit, order_by }) => {
-      if (!schema_type && !full_text && (!filters || filters.length === 0)) {
-        return toolError('At least one of schema_type, full_text, or filters is required', 'VALIDATION_ERROR');
+    async ({ schema_type, full_text, filters, limit, order_by, references }) => {
+      if (!schema_type && !full_text && (!filters || filters.length === 0) && !references) {
+        return toolError('At least one of schema_type, full_text, filters, or references is required', 'VALIDATION_ERROR');
       }
 
       try {
+        // Resolve references target
+        let resolvedTargetId: string | null = null;
+        if (references) {
+          const exactMatch = db.prepare('SELECT id FROM nodes WHERE id = ?').get(references.target) as { id: string } | undefined;
+          if (exactMatch) {
+            resolvedTargetId = exactMatch.id;
+          } else {
+            resolvedTargetId = resolveTarget(db, references.target);
+          }
+        }
+
         const { sql, params } = buildQuerySql({
           schema_type,
           full_text,
           filters,
           order_by,
           limit,
+          references,
+          resolvedTargetId,
         });
 
         const rows = db.prepare(sql).all(...params) as Array<{
