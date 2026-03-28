@@ -155,4 +155,130 @@ describe('summarize-node tool', () => {
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0].text).toContain('## Node: Actual');
   });
+
+  it('extracts and returns image embeds with header blocks', async () => {
+    mkdirSync(join(vaultDir, 'Attachments'), { recursive: true });
+    mkdirSync(join(vaultDir, 'notes'), { recursive: true });
+
+    // 1x1 transparent PNG
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+    writeFileSync(join(vaultDir, 'Attachments', 'diagram.png'), Buffer.from(pngBase64, 'base64'));
+
+    const md = '---\ntitle: Design Doc\ntypes: [note]\n---\n\nSee diagram:\n\n![[diagram.png]]';
+    writeFileSync(join(vaultDir, 'notes/design.md'), md);
+    const parsed = parseFile('notes/design.md', md);
+    indexFile(db, parsed, 'notes/design.md', new Date().toISOString(), md);
+
+    const result = await client.callTool({
+      name: 'summarize-node',
+      arguments: { node_id: 'notes/design.md' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+
+    // Header should mention the image
+    expect(content[0].text).toContain('diagram.png');
+    expect(content[0].text).toContain('image');
+
+    // Body block
+    expect(content[1].text).toContain('See diagram:');
+
+    // Image block (base64)
+    const imageBlock = content.find(c => c.type === 'image');
+    expect(imageBlock).toBeDefined();
+    expect(imageBlock!.mimeType).toBe('image/png');
+
+    // Image label block
+    const labelBlock = content.find(c => c.type === 'text' && c.text?.includes('## Image: diagram.png'));
+    expect(labelBlock).toBeDefined();
+  });
+
+  it('extracts and returns document embeds as text', async () => {
+    mkdirSync(join(vaultDir, 'Attachments'), { recursive: true });
+    mkdirSync(join(vaultDir, 'notes'), { recursive: true });
+
+    writeFileSync(join(vaultDir, 'Attachments', 'readme.txt'), 'This is a plain text document.');
+
+    const md = '---\ntitle: Docs Review\ntypes: [note]\n---\n\nReview this:\n\n![[readme.txt]]';
+    writeFileSync(join(vaultDir, 'notes/docs-review.md'), md);
+    const parsed = parseFile('notes/docs-review.md', md);
+    indexFile(db, parsed, 'notes/docs-review.md', new Date().toISOString(), md);
+
+    const result = await client.callTool({
+      name: 'summarize-node',
+      arguments: { node_id: 'notes/docs-review.md' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text?: string }>;
+
+    // Header mentions document
+    expect(content[0].text).toContain('readme.txt');
+    expect(content[0].text).toContain('document');
+
+    // Document content block
+    const docBlock = content.find(c => c.type === 'text' && c.text?.includes('## Document: readme.txt'));
+    expect(docBlock).toBeDefined();
+    expect(docBlock!.text).toContain('This is a plain text document.');
+  });
+
+  it('includes warning for embeds that cannot be found on disk', async () => {
+    mkdirSync(join(vaultDir, 'notes'), { recursive: true });
+
+    const md = '---\ntitle: Broken Embeds\ntypes: [note]\n---\n\nSee: ![[missing-file.pdf]]';
+    writeFileSync(join(vaultDir, 'notes/broken.md'), md);
+    const parsed = parseFile('notes/broken.md', md);
+    indexFile(db, parsed, 'notes/broken.md', new Date().toISOString(), md);
+
+    const result = await client.callTool({
+      name: 'summarize-node',
+      arguments: { node_id: 'notes/broken.md' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text?: string }>;
+
+    // Header should mention the missing file
+    expect(content[0].text).toContain('missing-file.pdf');
+    expect(content[0].text).toContain('not found');
+
+    // Warning block for the missing embed
+    const warningBlock = content.find(c => c.type === 'text' && c.text?.includes('⚠️ File not found on disk'));
+    expect(warningBlock).toBeDefined();
+  });
+
+  it('handles multiple embeds of different types', async () => {
+    mkdirSync(join(vaultDir, 'Attachments'), { recursive: true });
+    mkdirSync(join(vaultDir, 'notes'), { recursive: true });
+
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==';
+    writeFileSync(join(vaultDir, 'Attachments', 'photo.png'), Buffer.from(pngBase64, 'base64'));
+    writeFileSync(join(vaultDir, 'Attachments', 'notes.txt'), 'Meeting notes text content.');
+
+    const md = '---\ntitle: Multi Embed\ntypes: [meeting]\n---\n\n![[photo.png]]\n\n![[notes.txt]]';
+    writeFileSync(join(vaultDir, 'notes/multi.md'), md);
+    const parsed = parseFile('notes/multi.md', md);
+    indexFile(db, parsed, 'notes/multi.md', new Date().toISOString(), md);
+
+    const result = await client.callTool({
+      name: 'summarize-node',
+      arguments: { node_id: 'notes/multi.md' },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text?: string; data?: string }>;
+
+    // Header mentions both
+    expect(content[0].text).toContain('photo.png');
+    expect(content[0].text).toContain('notes.txt');
+
+    // Image block present
+    expect(content.some(c => c.type === 'image')).toBe(true);
+
+    // Document block present
+    const docBlock = content.find(c => c.type === 'text' && c.text?.includes('## Document: notes.txt'));
+    expect(docBlock).toBeDefined();
+    expect(docBlock!.text).toContain('Meeting notes text content.');
+  });
 });
