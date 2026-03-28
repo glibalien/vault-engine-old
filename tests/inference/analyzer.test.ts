@@ -356,4 +356,34 @@ describe('analyzeVault', () => {
     expect(task.shared_fields).toContain('status');
     expect(meeting.shared_fields).toContain('status');
   });
+
+  it('populates inferred_template from file paths', () => {
+    // Index 5 meetings in Meetings/ dir — 100% dominance
+    for (const name of ['standup', 'retro', 'planning', 'review', 'sync']) {
+      const raw = `---\ntitle: ${name}\ntypes: [meeting]\ndate: "[[2026-03-01]]"\n---\n# ${name}\n`;
+      const relativePath = `Meetings/${name}.md`;
+      const parsed = parseFile(relativePath, raw);
+      indexFile(db, parsed, relativePath, '2026-03-28T00:00:00.000Z', raw);
+    }
+
+    const result = analyzeVault(db);
+    const meeting = result.types.find(t => t.name === 'meeting')!;
+    expect(meeting).toBeDefined();
+    expect(meeting.inferred_template).toBe('Meetings/{{title}}.md');
+  });
+
+  it('returns null inferred_template when files are spread across directories', () => {
+    const dirs = ['A', 'B', 'C', 'D', 'E'];
+    for (const dir of dirs) {
+      const raw = `---\ntitle: ${dir}-task\ntypes: [task]\n---\n# ${dir}\n`;
+      const relativePath = `${dir}/${dir}-task.md`;
+      const parsed = parseFile(relativePath, raw);
+      indexFile(db, parsed, relativePath, '2026-03-28T00:00:00.000Z', raw);
+    }
+
+    const result = analyzeVault(db);
+    const task = result.types.find(t => t.name === 'task')!;
+    expect(task).toBeDefined();
+    expect(task.inferred_template).toBeNull();
+  });
 });
