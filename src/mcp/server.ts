@@ -1358,29 +1358,196 @@ export function createServer(
 
   server.tool(
     'update-node',
-    'Update an existing node\'s fields, body, types, and/or title. Fields are merged (not replaced); set a field to null to remove it. Setting title here only changes frontmatter — it does NOT rename the file or update wiki-link references (use rename-node for that).',
+    'Update an existing node\'s fields, body, types, and/or title. Single-node mode: pass node_id. Query mode: pass query to bulk-update all matching nodes (fields only). Fields are merged (not replaced); set a field to null to remove it.',
     {
-      node_id: z.string().min(1).describe('Vault-relative file path of the node to update, e.g. "tasks/review.md"'),
+      node_id: z.string().min(1).optional()
+        .describe('Vault-relative file path of the node to update, e.g. "tasks/review.md". Mutually exclusive with query.'),
+      query: z.object({
+        schema_type: z.string().min(1).optional()
+          .describe('Schema type to filter by, e.g. "task"'),
+        filters: z.array(z.object({
+          field: z.string().min(1),
+          operator: z.enum(['eq', 'neq', 'gt', 'lt', 'gte', 'lte', 'contains', 'in']).default('eq'),
+          value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
+        })).optional()
+          .describe('Field filters with comparison operators'),
+      }).optional()
+        .describe('Query to select nodes for bulk update. Mutually exclusive with node_id.'),
       fields: z.record(z.string(), z.unknown()).optional()
         .describe('Fields to update (merged with existing). Set a value to null to remove a field.'),
       body: z.string().optional()
-        .describe('Replace the entire body content'),
+        .describe('Replace the entire body content (single-node mode only)'),
       append_body: z.string().optional()
-        .describe('Append to existing body content'),
+        .describe('Append to existing body content (single-node mode only)'),
       types: z.array(z.string()).optional()
-        .describe('Replace the node\'s types array. Pass the full desired array.'),
+        .describe('Replace the node\'s types array (single-node mode only)'),
       title: z.string().optional()
-        .describe('Update the node\'s title in frontmatter. Does NOT rename the file or update wiki-link references — use rename-node for that.'),
+        .describe('Update the node\'s title in frontmatter (single-node mode only)'),
+      dry_run: z.boolean().optional().default(false)
+        .describe('When true with query mode, returns matched nodes without writing'),
     },
     async (params) => {
-      if (hasPathTraversal(params.node_id)) {
-        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      const { node_id, query, fields: fieldUpdates, body, append_body, types, title, dry_run } = params;
+
+      // Mutual exclusion: node_id vs query
+      if (node_id && query) {
+        return toolError('node_id and query are mutually exclusive — use one or the other', 'VALIDATION_ERROR');
       }
-      try {
-        return updateNode(params);
-      } catch (err) {
-        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
+
+      // Single-node mode
+      if (node_id) {
+        if (hasPathTraversal(node_id)) {
+          return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+        }
+        if (dry_run) {
+          return toolError('dry_run is only valid in query mode (with query param)', 'VALIDATION_ERROR');
+        }
+        try {
+          return updateNode({ node_id, fields: fieldUpdates, body, append_body, types, title });
+        } catch (err) {
+          return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
+        }
       }
+
+      // Query mode
+      if (query) {
+        // Validate: forbidden params in query mode
+        if (body !== undefined) {
+          return toolError('body is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
+        }
+        if (append_body !== undefined) {
+          return toolError('append_body is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
+        }
+        if (title !== undefined) {
+          return toolError('title is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
+        }
+        if (types !== undefined) {
+          return toolError('types is not allowed in query mode — only fields can be bulk-updated', 'VALIDATION_ERROR');
+        }
+
+        // Validate: fields required in query mode
+        if (!fieldUpdates || Object.keys(fieldUpdates).length === 0) {
+          return toolError('fields is required in query mode', 'VALIDATION_ERROR');
+        }
+
+        // Validate: query must have at least schema_type or filters
+        if (!query.schema_type && (!query.filters || query.filters.length === 0)) {
+          return toolError('query must include at least one of schema_type or filters', 'VALIDATION_ERROR');
+        }
+
+        try {
+          // Find matching nodes using buildQuerySql
+          const { sql, params: queryParams } = buildQuerySql({
+            schema_type: query.schema_type,
+            filters: query.filters,
+            limit: 1000,
+            select: 'id-only',
+          });
+
+          const matchedRows = db.prepare(sql).all(...queryParams) as Array<{ id: string }>;
+
+          if (matchedRows.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify(
+                dry_run
+                  ? { matched: 0, nodes: [] }
+                  : { updated: 0, nodes: [], warnings: [] }
+              ) }],
+            };
+          }
+
+          // Dry-run: return matched nodes without writing
+          if (dry_run) {
+            const fullRows = db.prepare(
+              `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+               FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
+            ).all(...matchedRows.map(r => r.id)) as Array<{
+              id: string; file_path: string; node_type: string; title: string | null;
+              content_text: string; content_md: string | null; updated_at: string;
+            }>;
+            const nodes = hydrateNodes(fullRows);
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({ matched: nodes.length, nodes }) }],
+            };
+          }
+
+          // Execute bulk update with transaction + file rollback
+          const deferredLocks = new Set<string>();
+          const fileSnapshots = new Map<string, string>();
+
+          function snapshotFile(relativePath: string) {
+            if (fileSnapshots.has(relativePath)) return;
+            const absPath = join(vaultPath, relativePath);
+            if (existsSync(absPath)) {
+              fileSnapshots.set(relativePath, readFileSync(absPath, 'utf-8'));
+            }
+          }
+
+          function rollbackFiles() {
+            for (const [relativePath, originalContent] of fileSnapshots) {
+              try { writeNodeFile(vaultPath, relativePath, originalContent); } catch { /* best effort */ }
+            }
+          }
+
+          try {
+            const batchResult = db.transaction(() => {
+              const allWarnings: unknown[] = [];
+
+              for (const row of matchedRows) {
+                snapshotFile(row.id);
+                const result = updateNodeInner(
+                  { node_id: row.id, fields: fieldUpdates },
+                  deferredLocks,
+                );
+                if ('isError' in result && result.isError) {
+                  throw new Error(JSON.parse(result.content[0].text).error);
+                }
+                const parsed = JSON.parse(result.content[0].text);
+                if (parsed.warnings && parsed.warnings.length > 0) {
+                  allWarnings.push(...parsed.warnings);
+                }
+              }
+
+              resolveReferences(db);
+
+              // Re-read all updated nodes for the response
+              const updatedRows = db.prepare(
+                `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+                 FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
+              ).all(...matchedRows.map(r => r.id)) as Array<{
+                id: string; file_path: string; node_type: string; title: string | null;
+                content_text: string; content_md: string | null; updated_at: string;
+              }>;
+              const nodes = hydrateNodes(updatedRows);
+
+              return { updated: nodes.length, nodes, warnings: allWarnings };
+            })();
+
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify(batchResult) }],
+            };
+          } catch (err) {
+            rollbackFiles();
+            const message = err instanceof Error ? err.message : String(err);
+            return {
+              content: [{
+                type: 'text' as const,
+                text: JSON.stringify({ error: message, code: 'INTERNAL_ERROR', rolled_back: true }),
+              }],
+              isError: true,
+            };
+          } finally {
+            for (const lockedPath of deferredLocks) {
+              releaseWriteLock(lockedPath);
+            }
+          }
+        } catch (err) {
+          return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
+        }
+      }
+
+      // Neither node_id nor query provided
+      return toolError('Either node_id or query is required', 'VALIDATION_ERROR');
     },
   );
 

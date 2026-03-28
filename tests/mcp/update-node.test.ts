@@ -415,4 +415,122 @@ describe('update-node', () => {
     expect(assigneeRel).toBeDefined();
     expect(assigneeRel!.resolved_target_id).toBe('people/Alice.md');
   });
+
+  it('updates types on a node that has no types', async () => {
+    await createTestNode({ title: 'Untyped' });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Untyped.md',
+        types: ['daily-note'],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.types).toContain('daily-note');
+
+    const content = readFileSync(join(vaultPath, 'Untyped.md'), 'utf-8');
+    expect(content).toContain('types:');
+    expect(content).toContain('daily-note');
+  });
+
+  it('replaces types on a node that already has types', async () => {
+    const created = await createTestNode({
+      title: 'Typed Node',
+      types: ['task'],
+      fields: { status: 'todo' },
+    });
+    const nodeId = created.node.id;
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: nodeId,
+        types: ['task', 'meeting'],
+      },
+    });
+
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(result.isError, `Unexpected error: ${text}`).toBeFalsy();
+    const data = JSON.parse(text);
+    expect(data.node.types).toContain('task');
+    expect(data.node.types).toContain('meeting');
+
+    const content = readFileSync(join(vaultPath, nodeId), 'utf-8');
+    expect(content).toContain('task');
+    expect(content).toContain('meeting');
+  });
+
+  it('updates title only without changing file path', async () => {
+    await createTestNode({
+      title: 'Old Title',
+      fields: { status: 'todo' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Old Title.md',
+        title: 'New Title',
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.title).toBe('New Title');
+
+    // File path unchanged
+    const content = readFileSync(join(vaultPath, 'Old Title.md'), 'utf-8');
+    expect(content).toContain('title: New Title');
+    expect(content).toContain('status: todo');
+  });
+
+  it('updates types and fields in same call', async () => {
+    await createTestNode({
+      title: 'Combo Node',
+      fields: { status: 'todo' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Combo Node.md',
+        types: ['task', 'daily-note'],
+        fields: { priority: 'high' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.types).toContain('task');
+    expect(data.node.types).toContain('daily-note');
+    expect(data.node.fields.status).toBe('todo');
+    expect(data.node.fields.priority).toBe('high');
+  });
+
+  it('still filters title and types from fields param', async () => {
+    await createTestNode({
+      title: 'Filter Test',
+      fields: { status: 'todo' },
+    });
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'Filter Test.md',
+        fields: { title: 'Sneaky', types: ['hacker'], status: 'done' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.node.fields.status).toBe('done');
+
+    // title and types should not have changed via fields
+    const content = readFileSync(join(vaultPath, 'Filter Test.md'), 'utf-8');
+    expect(content).toContain('title: Filter Test');
+    expect(content).not.toContain('Sneaky');
+  });
 });
