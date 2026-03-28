@@ -20,6 +20,8 @@ npm run dev           # run with tsx watch (hot reload)
 npm run start:http    # start with HTTP transport on port 3333
 node dist/index.js --transport http --port 3333  # HTTP only (custom port)
 node dist/index.js --transport both --port 3333  # stdio + HTTP simultaneously
+# HTTP with auth (requires OAUTH_OWNER_PASSWORD and OAUTH_ISSUER_URL in .env)
+node dist/index.js --transport http --port 3333
 ```
 
 ## Architecture
@@ -137,17 +139,27 @@ Schema inference from indexed vault data.
 - **`generator.ts`** — `generateSchemas(analysis, mode, existingSchemas)` produces `SchemaDefinition[]` based on mode. `writeSchemaFiles(schemas, vaultPath)` serializes to `.schemas/*.yaml`. Merge mode preserves existing fields/properties and unions enum values. Overwrite mode produces clean schemas from data.
 - **`index.ts`** — Re-exports all types and functions.
 
+### Auth Layer (`src/auth/`)
+
+OAuth 2.1 authentication for the HTTP transport, implementing the MCP auth spec.
+
+- **`schema.ts`** — DDL for 3 auth tables (`oauth_clients`, `oauth_codes`, `oauth_tokens`). Created via `createAuthSchema(db)`, idempotent.
+- **`store.ts`** — `SqliteClientsStore` implements `OAuthRegisteredClientsStore`. Stores client metadata as JSON blob. Client secrets stored plaintext (SDK constraint).
+- **`provider.ts`** — `VaultOAuthProvider` implements `OAuthServerProvider`. Password-gated `/authorize` with HTML form. Opaque tokens via `crypto.randomBytes`, stored as SHA-256 hashes. Access tokens: 1hr, refresh tokens: 30 days with rotation.
+- **`env.ts`** — `validateAuthEnv()` validates `OAUTH_OWNER_PASSWORD` and `OAUTH_ISSUER_URL` at startup. HTTPS required (HTTP allowed for localhost only).
+- **`index.ts`** — Re-exports.
+
 ### Transport Layer (`src/transport/`)
 
 CLI argument parsing and HTTP transport setup.
 
 - **`args.ts`** — `parseArgs(argv)` extracts `--transport` (stdio|http|both, default stdio) and `--port` (default 3333) flags plus positional dbPath/vaultPath.
-- **`http.ts`** — `createHttpApp(serverFactory)` creates an Express app with POST/GET/DELETE/HEAD `/mcp` routes. Per-session `StreamableHTTPServerTransport` instances stored in a `Map`. New `McpServer` created per session via factory (MCP SDK constraint: one transport per server). HEAD and sessionless GET return `MCP-Protocol-Version: 2025-03-26` for protocol discovery. `startHttpTransport(serverFactory, port)` calls `createHttpApp` and starts listening. Returns `{ app, httpServer }`. Logs to stderr.
+- **`http.ts`** — `createHttpApp(serverFactory)` creates an Express app with POST/GET/DELETE/HEAD `/mcp` routes. Per-session `StreamableHTTPServerTransport` instances stored in a `Map`. New `McpServer` created per session via factory (MCP SDK constraint: one transport per server). HEAD and sessionless GET return `MCP-Protocol-Version: 2025-03-26` for protocol discovery. `startHttpTransport(serverFactory, port)` calls `createHttpApp` and starts listening. Returns `{ app, httpServer }`. Logs to stderr. Auth integration: when `authConfig` provided, installs `mcpAuthRouter()` (OAuth endpoints) and `requireBearerAuth()` (protects `/mcp`). HEAD and sessionless GET remain unauthenticated for protocol discovery.
 - **`index.ts`** — Re-exports `createHttpApp`, `startHttpTransport`, `parseArgs`.
 
 ### Entry Point (`src/index.ts`)
 
-Loads `dotenv/config` first (reads `.env` for `FIREWORKS_API_KEY` etc.), then opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts transport(s) based on `--transport` flag. Default is stdio. HTTP mode creates an Express server on the specified port. Both mode runs stdio and HTTP simultaneously. Embedding config loaded from `.vault-engine/config.json` if present. A `.env.example` template is provided; `.env` is gitignored.
+Loads `dotenv/config` first (reads `.env` for `FIREWORKS_API_KEY` etc.), then opens DB (path from CLI arg or default `.vault-engine/vault.db`), creates schema, loads schemas, runs `incrementalIndex` to populate/refresh the DB on startup, then starts transport(s) based on `--transport` flag. Default is stdio. HTTP mode validates `OAUTH_OWNER_PASSWORD` and `OAUTH_ISSUER_URL` env vars, creates auth schema, and passes auth config to `startHttpTransport`. Both mode runs stdio and HTTP simultaneously. Embedding config loaded from `.vault-engine/config.json` if present. A `.env.example` template is provided; `.env` is gitignored.
 
 ### Schema Layer (`src/schema/`)
 
