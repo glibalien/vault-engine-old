@@ -82,9 +82,9 @@ Full-text search over indexed content.
 
 MCP server exposing query, mutation, and workflow tools over the indexed vault.
 
-- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 21 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
+- **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 22 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
-  - **`get-node`** — Returns full node details by ID (vault-relative path). Optional `include_relationships` and `include_computed` flags.
+  - **`get-node`** — Returns full node details by ID (vault-relative path) or title. Optional `title` param for wiki-link-style lookup when directory is unknown. Optional `include_relationships` and `include_computed` flags.
   - **`get-recent`** — Returns nodes ordered by `updated_at DESC`. Optional `schema_type` and `since` filters.
   - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `order_by`, and `limit`. Dynamic SQL construction with bound parameters.
   - **`list-schemas`** — No params. Returns schema summaries (name, display_name, icon, extends, ancestors, field_count) from the `schemas` table. Distinct from `list-types` (indexed data vs YAML definitions).
@@ -104,6 +104,7 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
   - **`extract-tasks`** — Creates task nodes from a source node with back-references via batch-mutate.
   - **`infer-schemas`** — Analyzes indexed vault data to infer schema definitions. Reports field types, frequencies, enum candidates, discrepancies against existing schemas, and shared fields across types. Three modes: report (analysis only), merge (expand existing schemas with inferred data), overwrite (replace schemas entirely).
   - **`read-embedded`** — Reads `![[embed]]` attachments from a node. Resolves embed paths (Attachments/ → root → sibling → recursive search), then reads by type: images as base64 MCP image blocks, audio transcribed via Fireworks Whisper API (OpenAI SDK), documents via pdf-parse/mammoth/fs. Returns array of content blocks with summary. Requires `FIREWORKS_API_KEY` env var for audio only.
+  - **`summarize-node`** — Content assembly tool. Reads a node and all its `![[embedded]]` attachments, returning everything as MCP content blocks. Accepts `node_id` or `title` (resolved via wiki-link logic). Returns: metadata header, node body as-is, then each embed's extracted content (audio transcripts, images as base64, documents as text) with `## Type: filename` headers. Missing embeds get `⚠️` warnings. The calling model handles summarization.
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
 
 ### Attachments Layer (`src/attachments/`)
