@@ -1184,7 +1184,7 @@ export function createServer(
 
   server.tool(
     'query-nodes',
-    'Search for nodes by type, field values, and/or full text. At least one of schema_type, full_text, or filters is required.',
+    'Search for nodes by type, field values, and/or full text. At least one of schema_type, full_text, filters, references, since, or path_prefix is required.',
     {
       schema_type: z.string().min(1).optional()
         .describe('Schema type to filter by, e.g. "task", "project", "meeting"'),
@@ -1210,10 +1210,14 @@ export function createServer(
           .describe('outgoing = nodes linking TO target; incoming = nodes target links TO; both = either'),
       }).optional()
         .describe('Filter by relationship — find nodes connected to a target node'),
+      since: z.string().min(1).optional()
+        .describe('ISO date — only return nodes updated after this time, e.g. "2026-03-27T00:00:00Z"'),
+      path_prefix: z.string().min(1).optional()
+        .describe('Filter by folder path prefix, e.g. "Meetings/" or "projects/acme/"'),
     },
-    async ({ schema_type, full_text, filters, limit, order_by, references }) => {
-      if (!schema_type && !full_text && (!filters || filters.length === 0) && !references) {
-        return toolError('At least one of schema_type, full_text, filters, or references is required', 'VALIDATION_ERROR');
+    async ({ schema_type, full_text, filters, limit, order_by, references, since, path_prefix }) => {
+      if (!schema_type && !full_text && (!filters || filters.length === 0) && !references && !since && !path_prefix) {
+        return toolError('At least one of schema_type, full_text, filters, references, since, or path_prefix is required', 'VALIDATION_ERROR');
       }
 
       try {
@@ -1234,6 +1238,8 @@ export function createServer(
           filters,
           order_by,
           limit,
+          since,
+          path_prefix,
           references,
           resolvedTargetId,
         });

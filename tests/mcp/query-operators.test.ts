@@ -260,4 +260,47 @@ describe('query-nodes comparison operators', () => {
     const nodes = parseResult(result);
     expect(nodes).toHaveLength(0);
   });
+
+  it('path_prefix: filters nodes by folder', async () => {
+    const result = await callQuery({ path_prefix: 'tasks/' });
+    const data = parseResult(result);
+    expect(data).toHaveLength(4);
+  });
+
+  it('path_prefix: appends trailing slash if missing', async () => {
+    const result = await callQuery({ path_prefix: 'tasks' });
+    const data = parseResult(result);
+    expect(data).toHaveLength(4);
+  });
+
+  it('path_prefix: no matches for nonexistent folder', async () => {
+    const result = await callQuery({ path_prefix: 'meetings/' });
+    const data = parseResult(result);
+    expect(data).toHaveLength(0);
+  });
+
+  it('since: filters by updated_at', async () => {
+    const result = await callQuery({
+      schema_type: 'task',
+      since: '2020-01-01T00:00:00.000Z',
+    });
+    const data = parseResult(result);
+    expect(data).toHaveLength(4);
+
+    const result2 = await callQuery({
+      schema_type: 'task',
+      since: '2099-01-01T00:00:00.000Z',
+    });
+    const data2 = parseResult(result2);
+    expect(data2).toHaveLength(0);
+  });
+
+  it('since: is sufficient as a standalone filter', async () => {
+    const result = await callQuery({
+      since: '2020-01-01T00:00:00.000Z',
+    });
+    expect(result.isError).toBeFalsy();
+    const data = parseResult(result);
+    expect(data).toHaveLength(4);
+  });
 });
