@@ -12,8 +12,8 @@ import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { parseFile } from '../parser/index.js';
 import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, deleteNodeFile, sanitizeSegment } from '../serializer/index.js';
-import { indexFile, deleteFile } from '../sync/indexer.js';
-import { releaseWriteLock } from '../sync/watcher.js';
+import { indexFile, deleteFile, incrementalIndex } from '../sync/indexer.js';
+import { releaseWriteLock, acquireGlobalWriteLock, releaseGlobalWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
 import { resolveReferences, resolveTarget, buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
@@ -1455,62 +1455,94 @@ export function createServer(
             };
           }
 
-          // Execute bulk update with transaction + file rollback
+          // Execute bulk update: global write lock, write all files, then single incremental index
           const deferredLocks = new Set<string>();
           const fileSnapshots = new Map<string, string>();
+          const allWarnings: unknown[] = [];
 
-          function snapshotFile(relativePath: string) {
-            if (fileSnapshots.has(relativePath)) return;
-            const absPath = join(vaultPath, relativePath);
-            if (existsSync(absPath)) {
-              fileSnapshots.set(relativePath, readFileSync(absPath, 'utf-8'));
-            }
-          }
-
-          // Rollback calls do NOT use deferred locks — they need immediate release since they're cleanup
           function rollbackFiles() {
             for (const [relativePath, originalContent] of fileSnapshots) {
               try { writeNodeFile(vaultPath, relativePath, originalContent); } catch { /* best effort */ }
             }
           }
 
+          acquireGlobalWriteLock();
           try {
-            const batchResult = db.transaction(() => {
-              const allWarnings: unknown[] = [];
+            for (const row of matchedRows) {
+              const nodeId = row.id;
+              const absPath = join(vaultPath, nodeId);
+              if (!existsSync(absPath)) {
+                throw new Error(`File not found on disk: ${nodeId}. Database and filesystem are out of sync.`);
+              }
 
-              for (const row of matchedRows) {
-                snapshotFile(row.id);
-                const result = updateNodeInner(
-                  { node_id: row.id, fields: fieldUpdates, types },
-                  deferredLocks,
-                );
-                if ('isError' in result && result.isError) {
-                  throw new Error(JSON.parse(result.content[0].text).error);
-                }
-                const parsed = JSON.parse(result.content[0].text);
-                if (parsed.warnings && parsed.warnings.length > 0) {
-                  allWarnings.push(...parsed.warnings);
+              // Snapshot before writing
+              if (!fileSnapshots.has(nodeId)) {
+                fileSnapshots.set(nodeId, readFileSync(absPath, 'utf-8'));
+              }
+
+              const raw = readFileSync(absPath, 'utf-8');
+              const parsed = parseFile(nodeId, raw);
+
+              // Title: existing frontmatter or filename stem
+              const nodeTitle = typeof parsed.frontmatter.title === 'string'
+                ? parsed.frontmatter.title
+                : nodeId.replace(/\.md$/, '').split('/').pop()!;
+
+              // Types: provided or existing
+              const nodeTypes = types !== undefined ? types : parsed.types;
+
+              // Merge fields: existing (excluding meta-keys) + updates
+              const mergedFields: Record<string, unknown> = {};
+              for (const [key, value] of Object.entries(parsed.frontmatter)) {
+                if (key === 'title' || key === 'types') continue;
+                mergedFields[key] = value;
+              }
+              if (fieldUpdates) {
+                for (const [key, value] of Object.entries(fieldUpdates)) {
+                  if (key === 'title' || key === 'types') continue;
+                  if (value === null) {
+                    delete mergedFields[key];
+                  } else {
+                    mergedFields[key] = value;
+                  }
                 }
               }
 
-              resolveReferences(db);
+              // Validate against schemas
+              const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+              const hasSchemas = nodeTypes.some(t => schemaCheck.get(t) !== undefined);
+              if (hasSchemas) {
+                const mergeResult = mergeSchemaFields(db, nodeTypes);
+                const forValidation = {
+                  filePath: nodeId,
+                  frontmatter: {},
+                  types: nodeTypes,
+                  fields: Object.entries(mergedFields).map(([key, value]) => ({
+                    key,
+                    value,
+                    valueType: inferFieldType(value),
+                  })),
+                  wikiLinks: [],
+                  mdast: { type: 'root' as const, children: [] },
+                  contentText: '',
+                  contentMd: '',
+                };
+                const validation = validateNode(forValidation, mergeResult);
+                allWarnings.push(...validation.warnings);
+              }
 
-              // Re-read all updated nodes for the response
-              const updatedRows = db.prepare(
-                `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
-                 FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
-              ).all(...matchedRows.map(r => r.id)) as Array<{
-                id: string; file_path: string; node_type: string; title: string | null;
-                content_text: string; content_md: string | null; updated_at: string;
-              }>;
-              const nodes = hydrateNodes(updatedRows);
+              // Serialize + write (no per-file index — deferred to incremental pass)
+              const fieldOrder = computeFieldOrder(nodeTypes, db);
+              const content = serializeNode({
+                title: nodeTitle,
+                types: nodeTypes,
+                fields: mergedFields,
+                body: parsed.contentMd || undefined,
+                fieldOrder,
+              });
 
-              return { updated: nodes.length, nodes, warnings: allWarnings };
-            })();
-
-            return {
-              content: [{ type: 'text' as const, text: JSON.stringify(batchResult) }],
-            };
+              writeNodeFile(vaultPath, nodeId, content, deferredLocks);
+            }
           } catch (err) {
             rollbackFiles();
             const message = err instanceof Error ? err.message : String(err);
@@ -1522,10 +1554,29 @@ export function createServer(
               isError: true,
             };
           } finally {
+            releaseGlobalWriteLock();
             for (const lockedPath of deferredLocks) {
               releaseWriteLock(lockedPath);
             }
           }
+
+          // Single incremental index pass after all writes complete
+          incrementalIndex(db, vaultPath);
+          resolveReferences(db);
+
+          // Hydrate updated nodes for response
+          const updatedRows = db.prepare(
+            `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+             FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
+          ).all(...matchedRows.map(r => r.id)) as Array<{
+            id: string; file_path: string; node_type: string; title: string | null;
+            content_text: string; content_md: string | null; updated_at: string;
+          }>;
+          const nodes = hydrateNodes(updatedRows);
+
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ updated: nodes.length, nodes, warnings: allWarnings }) }],
+          };
         } catch (err) {
           return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
         }
