@@ -24,6 +24,7 @@ import { projectStatusHandler, dailySummaryHandler, createMeetingNotesHandler, e
 import { resolveEmbeds } from '../attachments/resolver.js';
 import { readImage, readAudio, readDocument } from '../attachments/readers.js';
 import type { ImageContent, TextContent } from '../attachments/types.js';
+import { normalizeFields } from './normalize-fields.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -1973,6 +1974,35 @@ export function createServer(
           ...contentBlocks,
         ],
       };
+    },
+  );
+
+  server.tool(
+    'normalize-fields',
+    'Normalize frontmatter field names and value shapes across the vault to match schema definitions. Run with mode=audit first to review changes, then mode=apply to execute.',
+    {
+      mode: z.enum(['audit', 'apply']).default('audit')
+        .describe('audit: report what would change. apply: execute normalization.'),
+      schema_type: z.string().min(1).optional()
+        .describe('Limit to nodes of a specific type. Omit to normalize all typed nodes.'),
+      rules: z.array(z.object({
+        action: z.enum(['rename_key', 'coerce_value']),
+        from_key: z.string().min(1),
+        to_key: z.string().min(1).optional(),
+        target_type: z.string().min(1).optional(),
+      })).optional()
+        .describe('Explicit normalization rules. Omit to auto-infer from schema definitions.'),
+    },
+    ({ mode, schema_type, rules }) => {
+      try {
+        const result = normalizeFields(db, vaultPath, { mode, schema_type, rules });
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return toolError(message, 'INTERNAL_ERROR');
+      }
     },
   );
 
