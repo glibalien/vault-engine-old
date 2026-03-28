@@ -11,6 +11,8 @@ import { loadVecExtension, createVecTable, getVecDimensions, dropVecTable, creat
 import type { EmbeddingConfig } from './embeddings/types.js';
 import { parseArgs } from './transport/args.js';
 import { startHttpTransport } from './transport/http.js';
+import { createAuthSchema } from './auth/schema.js';
+import { validateAuthEnv } from './auth/env.js';
 
 const args = parseArgs(process.argv.slice(2));
 const dbPath = args.dbPath ?? resolve(process.cwd(), '.vault-engine', 'vault.db');
@@ -72,5 +74,11 @@ if (args.transport === 'stdio' || args.transport === 'both') {
 }
 
 if (args.transport === 'http' || args.transport === 'both') {
-  await startHttpTransport(serverFactory, args.port);
+  const authEnv = validateAuthEnv(process.env.OAUTH_OWNER_PASSWORD, process.env.OAUTH_ISSUER_URL);
+  createAuthSchema(db);
+  await startHttpTransport(serverFactory, args.port, {
+    db,
+    ownerPassword: authEnv.ownerPassword,
+    issuerUrl: authEnv.issuerUrl,
+  });
 }
