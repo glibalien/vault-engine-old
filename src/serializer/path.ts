@@ -7,7 +7,9 @@ const TEMPLATE_VAR_RE = /\{\{(\w+)\}\}/g;
 
 function formatTemplateValue(value: unknown): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
-  return String(value);
+  const str = String(value);
+  const match = str.match(/^\[\[(.+)\]\]$/);
+  return match ? match[1] : str;
 }
 
 export function sanitizeSegment(segment: string): string {

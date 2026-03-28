@@ -82,4 +82,14 @@ describe('generateFilePath', () => {
     );
     expect(result).toBe('meetings/2025-03-06-Q1 Planning.md');
   });
+
+  it('strips [[]] brackets from reference field values in templates', () => {
+    const result = generateFilePath(
+      'Q1 Planning',
+      ['meeting'],
+      { date: '[[2025-03-06]]' },
+      db,
+    );
+    expect(result).toBe('meetings/2025-03-06-Q1 Planning.md');
+  });
 });
