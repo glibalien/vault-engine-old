@@ -21,6 +21,20 @@ export function isWriteLocked(relativePath: string): boolean {
   return writeLocks.has(relativePath);
 }
 
+let globalLockActive = false;
+
+export function acquireGlobalWriteLock(): void {
+  globalLockActive = true;
+}
+
+export function releaseGlobalWriteLock(): void {
+  globalLockActive = false;
+}
+
+export function isGlobalWriteLocked(): boolean {
+  return globalLockActive;
+}
+
 export interface WatcherOptions {
   debounceMs?: number;
   ignorePaths?: string[];
@@ -65,6 +79,7 @@ export function watchVault(
   }
 
   function handleAddOrChange(absPath: string): void {
+    if (globalLockActive) return;
     const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
     if (isWriteLocked(rel)) return;
 
@@ -97,6 +112,7 @@ export function watchVault(
   });
 
   watcher.on('unlink', (absPath: string) => {
+    if (globalLockActive) return;
     const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
     if (isWriteLocked(rel)) return;
 
