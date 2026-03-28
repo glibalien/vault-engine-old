@@ -45,6 +45,17 @@ parseFile(filePath, raw)
 - **`wiki-links.ts`** — `extractWikiLinksFromMdast` walks `wikiLink` AST nodes (not regex on text). `extractWikiLinksFromString` provides regex extraction for frontmatter values.
 - **`index.ts`** — `parseFile()` orchestrator, re-exports types.
 
+### Serializer (`src/serializer/`)
+
+Reverse of the parser — converts structured data back to markdown files.
+
+- **`frontmatter.ts`** — Serializes frontmatter fields back to YAML + body markdown.
+- **`path.ts`** — Path generation and sanitization for new node files.
+- **`node-to-file.ts`** — Converts node data to complete markdown file content.
+- **`writer.ts`** — File write operations with write-lock integration.
+- **`patch.ts`** — `patchFrontmatter(fileContent, mutations)` — surgical regex-based frontmatter patching. Applies `rename_key` and `coerce_value` mutations to raw YAML without re-serializing the whole file. Body preserved byte-for-byte.
+- **`index.ts`** — Re-exports serializer functions.
+
 ### Key Design Decisions
 
 - **Markdown is canonical.** DB is always rebuildable from files. Structure lives in frontmatter + wiki-links.
@@ -67,7 +78,7 @@ Database connection and schema management.
 File-to-database indexing pipeline.
 
 - **`indexer.ts`** — `indexFile(db, parsed, relativePath, mtime, raw)` writes one parsed file into all DB tables (nodes, node_types, fields, relationships, files). Uses delete-then-insert for child tables. Does not manage transactions. `deleteFile(db, relativePath)` removes all DB rows for a file path (relationships, fields, node_types, nodes, files). `rebuildIndex(db, vaultPath)` scans all `.md` files, clears the DB, and indexes everything in one transaction. `incrementalIndex(db, vaultPath)` scans files, compares mtime then SHA-256 hash against the `files` table, only re-indexes changed/new files, and removes DB entries for deleted files. Returns `{ indexed, skipped, deleted }`.
-- **`watcher.ts`** — `watchVault(db, vaultPath, opts?)` creates a chokidar watcher on the vault directory. Returns `{ close(), ready }`. Watches only `.md` files with `ignoreInitial: true`. Per-file debounce (default 300ms) prevents double-indexing on rapid saves. `add`/`change` events trigger `parseFile` + `indexFile`; `unlink` triggers `deleteFile`. Write lock functions (`acquireWriteLock`/`releaseWriteLock`/`isWriteLocked`) allow Phase 3 serializer to prevent re-indexing of engine-written files.
+- **`watcher.ts`** — `watchVault(db, vaultPath, opts?)` creates a chokidar watcher on the vault directory. Returns `{ close(), ready }`. Watches only `.md` files with `ignoreInitial: true`. Per-file debounce (default 300ms) prevents double-indexing on rapid saves. `add`/`change` events trigger `parseFile` + `indexFile`; `unlink` triggers `deleteFile`. Write lock functions (`acquireWriteLock`/`releaseWriteLock`/`isWriteLocked`) allow Phase 3 serializer to prevent re-indexing of engine-written files. Global write lock functions (`acquireGlobalWriteLock`/`releaseGlobalWriteLock`/`isGlobalWriteLocked`) suppress ALL watcher events during bulk operations like normalize-fields. Per-file locks remain for single-file write tools.
 - **`index.ts`** — Re-exports `indexFile`, `rebuildIndex`, `deleteFile`, `incrementalIndex`, `watchVault`, `acquireWriteLock`, `releaseWriteLock`, `isWriteLocked`.
 
 ### Search Layer (`src/search/`)
@@ -105,6 +116,7 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
   - **`infer-schemas`** — Analyzes indexed vault data to infer schema definitions. Reports field types, frequencies, enum candidates, discrepancies against existing schemas, and shared fields across types. Three modes: report (analysis only), merge (expand existing schemas with inferred data), overwrite (replace schemas entirely).
   - **`read-embedded`** — Reads `![[embed]]` attachments from a node. Resolves embed paths (Attachments/ → root → sibling → recursive search), then reads by type: images as base64 MCP image blocks, audio transcribed via Fireworks Whisper API (OpenAI SDK), documents via pdf-parse/mammoth/fs. Returns array of content blocks with summary. Requires `FIREWORKS_API_KEY` env var for audio only.
   - **`summarize-node`** — Content assembly tool. Reads a node and all its `![[embedded]]` attachments, returning everything as MCP content blocks. Accepts `node_id` or `title` (resolved via wiki-link logic). Returns: metadata header, node body as-is, then each embed's extracted content (audio transcripts, images as base64, documents as text) with `## Type: filename` headers. Missing embeds get `⚠️` warnings. The calling model handles summarization.
+  - **`normalize-fields`** — Normalizes frontmatter field names and value shapes across the vault to match schema definitions. Two modes: `audit` (report what would change) and `apply` (execute). Optional `schema_type` filter and explicit `rules` param; when rules omitted, auto-infers from schema definitions. Apply mode uses global write lock, file rollback on failure, and re-indexes after patching.
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
 
 ### Attachments Layer (`src/attachments/`)
