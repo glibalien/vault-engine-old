@@ -1356,6 +1356,8 @@ export function createServer(
           .describe('Field filters with comparison operators'),
         path_prefix: z.string().min(1).optional()
           .describe('Filter by node ID path prefix, e.g. "Daily Notes/"'),
+        limit: z.number().int().min(1).optional()
+          .describe('Max nodes to update. Omit for no limit (updates all matches).'),
       }).optional()
         .describe('Query to select nodes for bulk update. Mutually exclusive with node_id.'),
       fields: z.record(z.string(), z.unknown()).optional()
@@ -1419,12 +1421,12 @@ export function createServer(
         }
 
         try {
-          // Find matching nodes using buildQuerySql
+          // Find matching nodes using buildQuerySql (no default limit — update all matches)
           const { sql, params: queryParams } = buildQuerySql({
             schema_type: query.schema_type,
             filters: query.filters,
             path_prefix: query.path_prefix,
-            limit: 1000,
+            limit: query.limit,
             select: 'id-only',
           });
 
@@ -1434,24 +1436,19 @@ export function createServer(
             return {
               content: [{ type: 'text' as const, text: JSON.stringify(
                 dry_run
-                  ? { matched: 0, nodes: [] }
-                  : { updated: 0, nodes: [], warnings: [] }
+                  ? { matched: 0, node_ids: [] }
+                  : { updated: 0, node_ids: [], warnings: [] }
               ) }],
             };
           }
 
-          // Dry-run: return matched nodes without writing
+          // Dry-run: return matched node IDs without writing
           if (dry_run) {
-            const fullRows = db.prepare(
-              `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
-               FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
-            ).all(...matchedRows.map(r => r.id)) as Array<{
-              id: string; file_path: string; node_type: string; title: string | null;
-              content_text: string; content_md: string | null; updated_at: string;
-            }>;
-            const nodes = hydrateNodes(fullRows);
             return {
-              content: [{ type: 'text' as const, text: JSON.stringify({ matched: nodes.length, nodes }) }],
+              content: [{ type: 'text' as const, text: JSON.stringify({
+                matched: matchedRows.length,
+                node_ids: matchedRows.map(r => r.id),
+              }) }],
             };
           }
 
@@ -1564,18 +1561,12 @@ export function createServer(
           incrementalIndex(db, vaultPath);
           resolveReferences(db);
 
-          // Hydrate updated nodes for response
-          const updatedRows = db.prepare(
-            `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
-             FROM nodes WHERE id IN (${matchedRows.map(() => '?').join(',')})`
-          ).all(...matchedRows.map(r => r.id)) as Array<{
-            id: string; file_path: string; node_type: string; title: string | null;
-            content_text: string; content_md: string | null; updated_at: string;
-          }>;
-          const nodes = hydrateNodes(updatedRows);
-
           return {
-            content: [{ type: 'text' as const, text: JSON.stringify({ updated: nodes.length, nodes, warnings: allWarnings }) }],
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              updated: matchedRows.length,
+              node_ids: matchedRows.map(r => r.id),
+              warnings: allWarnings,
+            }) }],
           };
         } catch (err) {
           return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');

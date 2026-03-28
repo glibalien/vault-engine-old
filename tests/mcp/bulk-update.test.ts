@@ -73,12 +73,7 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.updated).toBe(2);
-    expect(data.nodes).toHaveLength(2);
-
-    // Verify each node has the updated status
-    for (const node of data.nodes) {
-      expect(node.fields.status).toBe('in-progress');
-    }
+    expect(data.node_ids).toHaveLength(2);
 
     // Verify files on disk
     const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
@@ -109,7 +104,7 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.matched).toBe(2);
-    expect(data.nodes).toHaveLength(2);
+    expect(data.node_ids).toHaveLength(2);
 
     // Files should NOT be changed
     const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
@@ -205,9 +200,6 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.updated).toBe(2);
-    for (const node of data.nodes) {
-      expect(node.types).toEqual(expect.arrayContaining(['task', 'daily-note']));
-    }
 
     // Verify files on disk
     const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
@@ -232,8 +224,11 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.updated).toBe(3);
-    for (const node of data.nodes) {
-      expect(node.types).toContain('daily-note');
+
+    // Verify all files on disk
+    for (const file of ['tasks/task-a.md', 'tasks/task-b.md', 'tasks/task-c.md']) {
+      const content = readFileSync(join(vaultPath, file), 'utf-8');
+      expect(content).toContain('daily-note');
     }
   });
 
@@ -261,6 +256,7 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.updated).toBe(3);
+    expect(data.node_ids).toHaveLength(3);
 
     // Root-level note should be unchanged
     const noteContent = readFileSync(join(vaultPath, 'note.md'), 'utf-8');
@@ -281,6 +277,7 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.updated).toBe(3);
+    expect(data.node_ids).toHaveLength(3);
   });
 
   it('dry_run works with types', async () => {
@@ -298,10 +295,45 @@ describe('update-node query mode (bulk update)', () => {
     expect(result.isError).toBeFalsy();
     const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
     expect(data.matched).toBe(3);
+    expect(data.node_ids).toHaveLength(3);
 
     // Files should NOT be changed
     const contentA = readFileSync(join(vaultPath, 'tasks/task-a.md'), 'utf-8');
     expect(contentA).not.toContain('daily-note');
+  });
+
+  it('respects limit on query object', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: { schema_type: 'task', limit: 2 },
+        fields: { reviewed: 'true' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(2);
+    expect(data.node_ids).toHaveLength(2);
+  });
+
+  it('updates all matches when no limit specified', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: { schema_type: 'task' },
+        fields: { reviewed: 'true' },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(data.updated).toBe(3);
+    expect(data.node_ids).toHaveLength(3);
   });
 
   it('errors when query has no schema_type, filters, or path_prefix', async () => {

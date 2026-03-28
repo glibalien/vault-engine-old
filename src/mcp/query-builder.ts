@@ -14,7 +14,7 @@ export interface QueryOptions {
   full_text?: string;
   filters?: QueryFilter[];
   order_by?: string;
-  limit: number;
+  limit?: number;
   /** Filter by updated_at > since (ISO datetime string) */
   since?: string;
   /** Filter by node id path prefix (e.g. "tasks/") */
@@ -239,11 +239,13 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
     orderClause = defaultOrder;
   }
 
-  // Assemble params in SQL placeholder order: join params, then condition params, then limit
-  const params: unknown[] = [...joinParams, ...conditionParams, opts.limit];
+  // Assemble params in SQL placeholder order: join params, then condition params, then optional limit
+  const params: unknown[] = [...joinParams, ...conditionParams];
+  const limitClause = opts.limit != null ? '\nLIMIT ?' : '';
+  if (opts.limit != null) params.push(opts.limit);
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const sql = `${selectFrom}\n${joins.join('\n')}\n${where}\nORDER BY ${orderClause}\nLIMIT ?`;
+  const sql = `${selectFrom}\n${joins.join('\n')}\n${where}\nORDER BY ${orderClause}${limitClause}`;
 
   return { sql, params };
 }
