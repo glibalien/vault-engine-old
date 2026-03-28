@@ -94,7 +94,6 @@ export class VaultOAuthProvider implements OAuthServerProvider {
   constructor(
     private readonly db: Database.Database,
     private readonly ownerPassword: string,
-    private readonly issuerUrl: URL,
   ) {
     this.store = new SqliteClientsStore(db);
   }
@@ -147,13 +146,13 @@ export class VaultOAuthProvider implements OAuthServerProvider {
   }
 
   async challengeForAuthorizationCode(
-    _client: OAuthClientInformationFull,
+    client: OAuthClientInformationFull,
     authorizationCode: string,
   ): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
     const row = this.db.prepare(
-      'SELECT code_challenge FROM oauth_codes WHERE code = ? AND expires_at > ?',
-    ).get(authorizationCode, now) as { code_challenge: string } | undefined;
+      'SELECT code_challenge FROM oauth_codes WHERE code = ? AND client_id = ? AND expires_at > ?',
+    ).get(authorizationCode, client.client_id, now) as { code_challenge: string } | undefined;
 
     if (!row) {
       throw new InvalidGrantError('Invalid or expired authorization code');
@@ -183,24 +182,27 @@ export class VaultOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError('Redirect URI mismatch');
     }
 
-    // Delete code (single-use)
-    this.db.prepare('DELETE FROM oauth_codes WHERE code = ?').run(authorizationCode);
-
-    // Generate tokens
     const accessToken = randomBytes(32).toString('hex');
     const refreshToken = randomBytes(32).toString('hex');
     const scopes = row.scopes;
     const tokenResource = resource?.toString() ?? row.resource;
 
-    this.db.prepare(`
-      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
-      VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
-    `).run(hashToken(accessToken), client.client_id, scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+    const exchangeTransaction = this.db.transaction(() => {
+      // Delete code (single-use)
+      this.db.prepare('DELETE FROM oauth_codes WHERE code = ?').run(authorizationCode);
 
-    this.db.prepare(`
-      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
-      VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
-    `).run(hashToken(refreshToken), client.client_id, scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+      // Generate tokens
+      this.db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
+      `).run(hashToken(accessToken), client.client_id, scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+
+      this.db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
+      `).run(hashToken(refreshToken), client.client_id, scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+    });
+    exchangeTransaction();
 
     return {
       access_token: accessToken,
@@ -227,23 +229,26 @@ export class VaultOAuthProvider implements OAuthServerProvider {
       throw new InvalidGrantError('Invalid or expired refresh token');
     }
 
-    // Revoke old refresh token
-    this.db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE token = ?').run(tokenHash);
-
-    // Generate new tokens
     const newAccessToken = randomBytes(32).toString('hex');
     const newRefreshToken = randomBytes(32).toString('hex');
     const tokenResource = resource?.toString() ?? row.resource;
 
-    this.db.prepare(`
-      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
-      VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
-    `).run(hashToken(newAccessToken), client.client_id, row.scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+    const refreshTransaction = this.db.transaction(() => {
+      // Revoke old refresh token
+      this.db.prepare('UPDATE oauth_tokens SET revoked = 1 WHERE token = ?').run(tokenHash);
 
-    this.db.prepare(`
-      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
-      VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
-    `).run(hashToken(newRefreshToken), client.client_id, row.scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+      // Generate new tokens
+      this.db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
+      `).run(hashToken(newAccessToken), client.client_id, row.scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+
+      this.db.prepare(`
+        INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+        VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
+      `).run(hashToken(newRefreshToken), client.client_id, row.scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+    });
+    refreshTransaction();
 
     return {
       access_token: newAccessToken,

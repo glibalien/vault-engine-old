@@ -18,10 +18,8 @@ npm run build         # compile TypeScript (tsc)
 npx tsc --noEmit      # type-check without emitting
 npm run dev           # run with tsx watch (hot reload)
 npm run start:http    # start with HTTP transport on port 3333
-node dist/index.js --transport http --port 3333  # HTTP only (custom port)
+node dist/index.js --transport http --port 3333  # HTTP only (requires OAUTH_OWNER_PASSWORD and OAUTH_ISSUER_URL in .env)
 node dist/index.js --transport both --port 3333  # stdio + HTTP simultaneously
-# HTTP with auth (requires OAUTH_OWNER_PASSWORD and OAUTH_ISSUER_URL in .env)
-node dist/index.js --transport http --port 3333
 ```
 
 ## Architecture

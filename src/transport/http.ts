@@ -37,7 +37,7 @@ export function createHttpApp(serverFactory: ServerFactory, authConfig?: AuthCon
   let bearerAuth: RequestHandler = (_req, _res, next) => { next(); };
 
   if (authConfig) {
-    const provider = new VaultOAuthProvider(authConfig.db, authConfig.ownerPassword, authConfig.issuerUrl);
+    const provider = new VaultOAuthProvider(authConfig.db, authConfig.ownerPassword);
 
     app.use(mcpAuthRouter({
       provider,

@@ -7,7 +7,6 @@ import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/share
 import type { AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 
 const TEST_PASSWORD = 'test-password-123';
-const ISSUER_URL = new URL('https://vault.example.com');
 
 function makeClient(): OAuthClientInformationFull {
   return {
@@ -49,7 +48,7 @@ describe('VaultOAuthProvider', () => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
     createAuthSchema(db);
-    provider = new VaultOAuthProvider(db, TEST_PASSWORD, ISSUER_URL);
+    provider = new VaultOAuthProvider(db, TEST_PASSWORD);
   });
 
   afterEach(() => {
