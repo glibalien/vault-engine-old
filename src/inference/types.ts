@@ -25,6 +25,7 @@ export interface TypeAnalysis {
   inferred_fields: InferredField[];
   discrepancies: Discrepancy[];
   shared_fields: string[];
+  inferred_template: string | null;
 }
 
 export interface InferenceResult {

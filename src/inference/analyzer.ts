@@ -276,6 +276,7 @@ export function analyzeVault(db: Database.Database, types?: string[]): Inference
       inferred_fields: inferredFields,
       discrepancies,
       shared_fields: [], // Filled in below
+      inferred_template: null, // Filled in by Task 2
     });
   }
 

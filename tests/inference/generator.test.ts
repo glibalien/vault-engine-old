@@ -14,6 +14,7 @@ function makeAnalysis(): InferenceResult {
         name: 'task',
         node_count: 10,
         has_existing_schema: false,
+        inferred_template: null,
         inferred_fields: [
           {
             key: 'status',
