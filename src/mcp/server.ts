@@ -1057,7 +1057,7 @@ export function createServer(
     {
       node_id: z.string().min(1).optional()
         .describe('Vault-relative file path, e.g. "tasks/review.md"'),
-      title: z.string().optional()
+      title: z.string().min(1).optional()
         .describe('Node title for lookup, e.g. "Review PR". Resolved via wiki-link resolution logic. Use when you know the name but not the directory.'),
       include_relationships: z.boolean().optional().default(false)
         .describe('Include incoming and outgoing relationships'),
@@ -1729,7 +1729,7 @@ export function createServer(
     {
       node_id: z.string().min(1).optional()
         .describe("Vault-relative file path, e.g. 'Meetings/Q1 Planning.md'"),
-      title: z.string().optional()
+      title: z.string().min(1).optional()
         .describe("Node title for lookup, e.g. 'Q1 Planning'. Resolved via wiki-link resolution logic. Use when you know the name but not the directory."),
     },
     async ({ node_id, title }) => {
