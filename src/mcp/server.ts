@@ -1722,6 +1722,167 @@ export function createServer(
     },
   );
 
+  // --- summarize-node tool ---
+  server.tool(
+    'summarize-node',
+    'Read a node and all its embedded content (audio transcriptions, PDFs, images, documents), returning everything assembled as text. Use this when asked to summarize, review, or analyze a note — especially meeting notes with audio recordings. The tool handles all content extraction; the calling model does the summarization. Also accepts a title instead of a full file path.',
+    {
+      node_id: z.string().min(1).optional()
+        .describe("Vault-relative file path, e.g. 'Meetings/Q1 Planning.md'"),
+      title: z.string().optional()
+        .describe("Node title for lookup, e.g. 'Q1 Planning'. Resolved via wiki-link resolution logic. Use when you know the name but not the directory."),
+    },
+    async ({ node_id, title }) => {
+      // 1. Resolve node ID
+      let resolvedId = node_id;
+      if (!resolvedId) {
+        if (!title) {
+          return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
+        }
+        const { titleMap, pathMap } = buildLookupMaps(db);
+        const resolved = resolveTargetWithMaps(title, titleMap, pathMap);
+        if (!resolved) {
+          const candidates = titleMap.get(title.toLowerCase());
+          if (candidates && candidates.length > 1) {
+            return toolError(
+              `Multiple nodes match title '${title}': ${candidates.join(', ')}`,
+              'VALIDATION_ERROR',
+            );
+          }
+          return toolError(`No node found with title '${title}'`, 'NOT_FOUND');
+        }
+        resolvedId = resolved;
+      }
+
+      if (hasPathTraversal(resolvedId)) {
+        return toolError('Invalid node_id: path traversal not allowed', 'VALIDATION_ERROR');
+      }
+
+      // 2. Load node from DB
+      const row = db.prepare(`
+        SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+        FROM nodes WHERE id = ?
+      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
+
+      if (!row) {
+        return toolError(`Node not found: ${resolvedId}`, 'NOT_FOUND');
+      }
+
+      const [node] = hydrateNodes([row], { includeContentMd: true });
+      const nodeTitle = (node.title as string) ?? resolvedId;
+      const types = (node.types as string[]).join(', ') || 'none';
+      const fields = node.fields as Record<string, string>;
+
+      // Read raw markdown from disk for embed detection
+      const absPath = join(vaultPath, row.file_path);
+      const raw = existsSync(absPath) ? readFileSync(absPath, 'utf-8') : null;
+
+      // 3. Extract body (from content_md or raw markdown)
+      const body = (row.content_md as string) ?? '';
+
+      // 4. Resolve embeds
+      const contentBlocks: Array<ImageContent | TextContent> = [];
+      const embedInventory: string[] = [];
+
+      if (raw) {
+        const sourceDir = dirname(absPath);
+        const embeds = resolveEmbeds(raw, vaultPath, sourceDir);
+
+        for (const embed of embeds) {
+          if (!embed.absolutePath) {
+            embedInventory.push(`${embed.filename} (not found on disk)`);
+            contentBlocks.push({
+              type: 'text' as const,
+              text: `## ${embed.attachmentType === 'unknown' ? 'File' : embed.attachmentType.charAt(0).toUpperCase() + embed.attachmentType.slice(1)}: ${embed.filename}\n\n⚠️ File not found on disk`,
+            });
+            continue;
+          }
+
+          let result;
+          switch (embed.attachmentType) {
+            case 'image':
+              result = readImage(embed.absolutePath, embed.filename);
+              embedInventory.push(`${embed.filename} (image${result.ok ? '' : ', failed'})`);
+              if (result.ok) {
+                // Add image blocks then a label
+                contentBlocks.push(...result.content);
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Image: ${embed.filename}\n(image returned above)`,
+                });
+              } else {
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Image: ${embed.filename}\n\n⚠️ ${result.error ?? 'Failed to read image'}`,
+                });
+              }
+              break;
+            case 'audio':
+              result = await readAudio(embed.absolutePath, embed.filename);
+              embedInventory.push(`${embed.filename} (audio${result.ok ? ', transcribed' : ', failed'})`);
+              if (result.ok) {
+                const transcriptText = result.content
+                  .filter((c): c is TextContent => c.type === 'text')
+                  .map(c => c.text)
+                  .join('\n\n');
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Audio: ${embed.filename}\n\n${transcriptText}`,
+                });
+              } else {
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Audio: ${embed.filename}\n\n⚠️ ${result.error ?? 'Failed to transcribe audio'}`,
+                });
+              }
+              break;
+            case 'document':
+              result = await readDocument(embed.absolutePath, embed.filename);
+              embedInventory.push(`${embed.filename} (document${result.ok ? '' : ', failed'})`);
+              if (result.ok) {
+                const docText = result.content
+                  .filter((c): c is TextContent => c.type === 'text')
+                  .map(c => c.text)
+                  .join('\n\n');
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Document: ${embed.filename}\n\n${docText}`,
+                });
+              } else {
+                contentBlocks.push({
+                  type: 'text' as const,
+                  text: `## Document: ${embed.filename}\n\n⚠️ ${result.error ?? 'Failed to read document'}`,
+                });
+              }
+              break;
+            default:
+              embedInventory.push(`${embed.filename} (unknown type, skipped)`);
+              break;
+          }
+        }
+      }
+
+      // 5. Build header
+      const fieldLines = Object.entries(fields)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(', ');
+      const embedSummary = embedInventory.length > 0
+        ? `**Embedded content found:** ${embedInventory.join('; ')}`
+        : '**No embedded content found**';
+
+      const header = `## Node: ${nodeTitle}\n**Types:** ${types}\n**Fields:** ${fieldLines || 'none'}\n\n${embedSummary}\n---`;
+
+      // 6. Assemble response
+      return {
+        content: [
+          { type: 'text' as const, text: header },
+          { type: 'text' as const, text: `## Node Content\n\n${body}` },
+          ...contentBlocks,
+        ],
+      };
+    },
+  );
+
   // --- read-embedded tool ---
   server.tool(
     'read-embedded',
