@@ -98,4 +98,115 @@ describe('VaultOAuthProvider', () => {
       expect(rows).toHaveLength(1);
     });
   });
+
+  describe('challengeForAuthorizationCode', () => {
+    it('returns stored code challenge', async () => {
+      const now = Math.floor(Date.now() / 1000);
+      db.prepare(`
+        INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, scopes, resource, state, created_at, expires_at)
+        VALUES ('test-code', 'test-client-id', 'https://example.com/callback', 'stored-challenge', '', NULL, NULL, ?, ?)
+      `).run(now, now + 600);
+
+      const challenge = await provider.challengeForAuthorizationCode(makeClient(), 'test-code');
+      expect(challenge).toBe('stored-challenge');
+    });
+
+    it('throws on unknown code', async () => {
+      await expect(
+        provider.challengeForAuthorizationCode(makeClient(), 'nonexistent'),
+      ).rejects.toThrow();
+    });
+
+    it('throws on expired code', async () => {
+      const past = Math.floor(Date.now() / 1000) - 1000;
+      db.prepare(`
+        INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, scopes, resource, state, created_at, expires_at)
+        VALUES ('expired-code', 'test-client-id', 'https://example.com/callback', 'challenge', '', NULL, NULL, ?, ?)
+      `).run(past - 600, past);
+
+      await expect(
+        provider.challengeForAuthorizationCode(makeClient(), 'expired-code'),
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('exchangeAuthorizationCode', () => {
+    function insertCode(overrides?: Partial<{ code: string; client_id: string; redirect_uri: string; expires_at: number }>) {
+      const now = Math.floor(Date.now() / 1000);
+      const defaults = {
+        code: 'valid-code',
+        client_id: 'test-client-id',
+        redirect_uri: 'https://example.com/callback',
+        expires_at: now + 600,
+      };
+      const vals = { ...defaults, ...overrides };
+      db.prepare(`
+        INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, scopes, resource, state, created_at, expires_at)
+        VALUES (?, ?, ?, 'challenge', '', NULL, 'state', ?, ?)
+      `).run(vals.code, vals.client_id, vals.redirect_uri, now, vals.expires_at);
+    }
+
+    it('returns access and refresh tokens', async () => {
+      insertCode();
+      const tokens = await provider.exchangeAuthorizationCode(
+        makeClient(), 'valid-code', undefined, 'https://example.com/callback',
+      );
+
+      expect(tokens.access_token).toBeDefined();
+      expect(tokens.refresh_token).toBeDefined();
+      expect(tokens.token_type).toBe('bearer');
+      expect(tokens.expires_in).toBe(3600);
+    });
+
+    it('deletes code after use (single-use)', async () => {
+      insertCode();
+      await provider.exchangeAuthorizationCode(
+        makeClient(), 'valid-code', undefined, 'https://example.com/callback',
+      );
+
+      const row = db.prepare('SELECT * FROM oauth_codes WHERE code = ?').get('valid-code');
+      expect(row).toBeUndefined();
+    });
+
+    it('stores tokens as hashes in database', async () => {
+      insertCode();
+      const tokens = await provider.exchangeAuthorizationCode(
+        makeClient(), 'valid-code', undefined, 'https://example.com/callback',
+      );
+
+      // The raw token should NOT be in the database
+      const accessRow = db.prepare('SELECT * FROM oauth_tokens WHERE token = ?').get(tokens.access_token);
+      expect(accessRow).toBeUndefined();
+
+      // The hash should be in the database
+      const { hashToken } = await import('../../src/auth/provider.js');
+      const hashRow = db.prepare('SELECT * FROM oauth_tokens WHERE token = ?').get(hashToken(tokens.access_token));
+      expect(hashRow).toBeDefined();
+    });
+
+    it('rejects expired code', async () => {
+      const past = Math.floor(Date.now() / 1000) - 1000;
+      insertCode({ expires_at: past });
+
+      await expect(
+        provider.exchangeAuthorizationCode(makeClient(), 'valid-code', undefined, 'https://example.com/callback'),
+      ).rejects.toThrow();
+    });
+
+    it('rejects code for wrong client', async () => {
+      insertCode({ client_id: 'other-client' });
+
+      await expect(
+        provider.exchangeAuthorizationCode(makeClient(), 'valid-code', undefined, 'https://example.com/callback'),
+      ).rejects.toThrow();
+    });
+
+    it('rejects code with wrong redirect_uri', async () => {
+      insertCode();
+
+      await expect(
+        provider.exchangeAuthorizationCode(makeClient(), 'valid-code', undefined, 'https://evil.com/steal'),
+      ).rejects.toThrow();
+    });
+  });
 });

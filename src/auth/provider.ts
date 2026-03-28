@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { Response } from 'express';
 import type { OAuthServerProvider, AuthorizationParams } from '@modelcontextprotocol/sdk/server/auth/provider.js';
 import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
@@ -9,6 +9,7 @@ import type {
   OAuthTokenRevocationRequest,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { SqliteClientsStore } from './store.js';
 
 export const ACCESS_TOKEN_TTL = 3600;       // 1 hour
@@ -145,22 +146,68 @@ export class VaultOAuthProvider implements OAuthServerProvider {
     res.redirect(redirectUrl.toString());
   }
 
-  // Stubs -- implemented in Tasks 4 and 5
   async challengeForAuthorizationCode(
     _client: OAuthClientInformationFull,
-    _authorizationCode: string,
+    authorizationCode: string,
   ): Promise<string> {
-    throw new Error('Not implemented');
+    const now = Math.floor(Date.now() / 1000);
+    const row = this.db.prepare(
+      'SELECT code_challenge FROM oauth_codes WHERE code = ? AND expires_at > ?',
+    ).get(authorizationCode, now) as { code_challenge: string } | undefined;
+
+    if (!row) {
+      throw new InvalidGrantError('Invalid or expired authorization code');
+    }
+    return row.code_challenge;
   }
 
   async exchangeAuthorizationCode(
-    _client: OAuthClientInformationFull,
-    _authorizationCode: string,
+    client: OAuthClientInformationFull,
+    authorizationCode: string,
     _codeVerifier?: string,
-    _redirectUri?: string,
-    _resource?: URL,
+    redirectUri?: string,
+    resource?: URL,
   ): Promise<OAuthTokens> {
-    throw new Error('Not implemented');
+    const now = Math.floor(Date.now() / 1000);
+    const row = this.db.prepare(
+      'SELECT * FROM oauth_codes WHERE code = ? AND expires_at > ?',
+    ).get(authorizationCode, now) as CodeRow | undefined;
+
+    if (!row) {
+      throw new InvalidGrantError('Invalid or expired authorization code');
+    }
+    if (row.client_id !== client.client_id) {
+      throw new InvalidGrantError('Authorization code was issued to a different client');
+    }
+    if (redirectUri && row.redirect_uri !== redirectUri) {
+      throw new InvalidGrantError('Redirect URI mismatch');
+    }
+
+    // Delete code (single-use)
+    this.db.prepare('DELETE FROM oauth_codes WHERE code = ?').run(authorizationCode);
+
+    // Generate tokens
+    const accessToken = randomBytes(32).toString('hex');
+    const refreshToken = randomBytes(32).toString('hex');
+    const scopes = row.scopes;
+    const tokenResource = resource?.toString() ?? row.resource;
+
+    this.db.prepare(`
+      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+      VALUES (?, 'access', ?, ?, ?, ?, ?, 0)
+    `).run(hashToken(accessToken), client.client_id, scopes, tokenResource, now, now + ACCESS_TOKEN_TTL);
+
+    this.db.prepare(`
+      INSERT INTO oauth_tokens (token, type, client_id, scopes, resource, created_at, expires_at, revoked)
+      VALUES (?, 'refresh', ?, ?, ?, ?, ?, 0)
+    `).run(hashToken(refreshToken), client.client_id, scopes, tokenResource, now, now + REFRESH_TOKEN_TTL);
+
+    return {
+      access_token: accessToken,
+      token_type: 'bearer',
+      expires_in: ACCESS_TOKEN_TTL,
+      refresh_token: refreshToken,
+    };
   }
 
   async exchangeRefreshToken(
