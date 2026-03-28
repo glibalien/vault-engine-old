@@ -1483,6 +1483,7 @@ export function createServer(
             }
           }
 
+          // Rollback calls do NOT use deferred locks — they need immediate release since they're cleanup
           function rollbackFiles() {
             for (const [relativePath, originalContent] of fileSnapshots) {
               try { writeNodeFile(vaultPath, relativePath, originalContent); } catch { /* best effort */ }

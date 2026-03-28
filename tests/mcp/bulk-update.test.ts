@@ -222,6 +222,37 @@ describe('update-node query mode (bulk update)', () => {
     expect(text).toContain('filters');
   });
 
+  it('errors when dry_run used with node_id', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        node_id: 'tasks/task-a.md',
+        fields: { status: 'done' },
+        dry_run: true,
+      },
+    });
+
+    expect(result.isError).toBe(true);
+    const text = (result.content as Array<{ text: string }>)[0].text;
+    expect(text).toContain('dry_run');
+  });
+
+  it('errors when fields is empty object in query mode', async () => {
+    seedTasks();
+
+    const result = await client.callTool({
+      name: 'update-node',
+      arguments: {
+        query: { schema_type: 'task' },
+        fields: {},
+      },
+    });
+
+    expect(result.isError).toBe(true);
+  });
+
   it('rolls back all files on error', async () => {
     seedTasks();
 
