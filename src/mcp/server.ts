@@ -1573,6 +1573,28 @@ export function createServer(
   );
 
   server.tool(
+    'delete-node',
+    'Delete a node and its file from the vault. Incoming references in other files become broken links.',
+    {
+      node_id: z.string().min(1).describe('Vault-relative file path of the node to delete, e.g. "tasks/review.md"'),
+    },
+    async ({ node_id }) => {
+      if (hasPathTraversal(node_id)) {
+        return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
+      }
+      try {
+        return db.transaction(() => {
+          const result = deleteNodeInner({ node_id });
+          if (!result.isError) resolveReferences(db);
+          return result;
+        })();
+      } catch (err) {
+        return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
+      }
+    },
+  );
+
+  server.tool(
     'semantic-search',
     'Search by semantic similarity with optional type and field filters',
     {
