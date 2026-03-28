@@ -91,11 +91,19 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
 
       switch (operator) {
         case 'eq':
-          conditions.push(`${alias}.key = ? AND ${alias}.value_text = ?`);
+          conditions.push(
+            `${alias}.key = ? AND CASE ${alias}.value_type ` +
+            `WHEN 'reference' THEN REPLACE(REPLACE(${alias}.value_text, '[[', ''), ']]', '') ` +
+            `ELSE ${alias}.value_text END = ?`,
+          );
           conditionParams.push(field, String(value));
           break;
         case 'neq':
-          conditions.push(`${alias}.key = ? AND ${alias}.value_text != ?`);
+          conditions.push(
+            `${alias}.key = ? AND CASE ${alias}.value_type ` +
+            `WHEN 'reference' THEN REPLACE(REPLACE(${alias}.value_text, '[[', ''), ']]', '') ` +
+            `ELSE ${alias}.value_text END != ?`,
+          );
           conditionParams.push(field, String(value));
           break;
         case 'gt':
@@ -114,8 +122,11 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
         }
         case 'contains': {
           const escaped = String(value).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-          conditions.push(`${alias}.key = ? AND ${alias}.value_text LIKE '%' || ? || '%' ESCAPE '\\'`);
-          conditionParams.push(field, escaped);
+          conditions.push(
+            `${alias}.key = ? AND (${alias}.value_text LIKE '%' || ? || '%' ESCAPE '\\' ` +
+            `OR (${alias}.value_type = 'list' AND ${alias}.value_text LIKE '%[[' || ? || ']]%'))`,
+          );
+          conditionParams.push(field, escaped, escaped);
           break;
         }
         case 'in': {
@@ -125,7 +136,11 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
             break;
           }
           const placeholders = vals.map(() => '?').join(', ');
-          conditions.push(`${alias}.key = ? AND ${alias}.value_text IN (${placeholders})`);
+          conditions.push(
+            `${alias}.key = ? AND CASE ${alias}.value_type ` +
+            `WHEN 'reference' THEN REPLACE(REPLACE(${alias}.value_text, '[[', ''), ']]', '') ` +
+            `ELSE ${alias}.value_text END IN (${placeholders})`,
+          );
           conditionParams.push(field, ...vals.map(String));
           break;
         }
