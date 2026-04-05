@@ -30,6 +30,8 @@ import { buildQuerySql } from './query-builder.js';
 import { coerceFields } from '../coercion/coerce.js';
 import { loadGlobalFields } from '../coercion/globals.js';
 import type { GlobalFieldDefinition } from '../coercion/types.js';
+import { loadEnforcementConfig, resolveEnforcementPolicies } from '../enforcement/index.js';
+import type { EnforcementConfig } from '../enforcement/types.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -62,6 +64,9 @@ export function createServer(
 
   // Load global field definitions for write-path coercion
   let globalFields: Record<string, GlobalFieldDefinition> = loadGlobalFields(vaultPath);
+
+  // Load per-type enforcement config
+  const enforcementConfig: EnforcementConfig = loadEnforcementConfig(vaultPath);
 
   // Shared helper: hydrate node rows with types and fields
   function hydrateNodes(
@@ -168,16 +173,33 @@ export function createServer(
     let mergeResult = hasSchemas ? mergeSchemaFields(db, types) : null;
     let warnings: ValidationWarning[] = [];
     let coercionLog: unknown[] = [];
+    let enforcementIssues: unknown[] = [];
+
+    // Resolve per-type enforcement policies
+    const enforcementPolicies = resolveEnforcementPolicies(enforcementConfig, types);
 
     if (mergeResult) {
       // Coerce fields before validation
-      const coercion = coerceFields(fields, mergeResult, globalFields);
+      const coercion = coerceFields(fields, mergeResult, globalFields, {
+        unknownFields: enforcementPolicies.unknownFields,
+        enumValidation: enforcementPolicies.enumValidation,
+      });
       Object.assign(fields, coercion.fields);
       // Replace fields with coerced version (clear keys that were aliased away)
       for (const key of Object.keys(fields)) {
         if (!(key in coercion.fields)) delete fields[key];
       }
       coercionLog = coercion.changes;
+
+      // Check for enforcement rejections
+      const rejections = coercion.issues.filter(i => i.severity === 'rejection');
+      if (rejections.length > 0) {
+        return toolError(
+          `Enforcement policy rejected this operation:\n${rejections.map(r => `- ${r.message}`).join('\n')}`,
+          'VALIDATION_ERROR',
+        );
+      }
+      enforcementIssues = coercion.issues.filter(i => i.severity === 'warning');
 
       const parsed = {
         filePath: 'pending',
@@ -275,6 +297,7 @@ export function createServer(
 
     const response: Record<string, unknown> = { node, warnings };
     if (coercionLog.length > 0) response.coercion = coercionLog;
+    if (enforcementIssues.length > 0) response.enforcement_issues = enforcementIssues;
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(response) }],
@@ -339,7 +362,11 @@ export function createServer(
     const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
     const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
     let coercionLog: unknown[] = [];
+    let enforcementIssues: unknown[] = [];
     let coercedUpdates = fieldUpdates;
+
+    // Resolve per-type enforcement policies
+    const enforcementPolicies = resolveEnforcementPolicies(enforcementConfig, types);
 
     if (fieldUpdates && hasSchemas) {
       const mergeResult = mergeSchemaFields(db, types);
@@ -354,8 +381,22 @@ export function createServer(
           toCoerce[key] = value;
         }
       }
-      const coercion = coerceFields(toCoerce, mergeResult, globalFields);
+      const coercion = coerceFields(toCoerce, mergeResult, globalFields, {
+        unknownFields: enforcementPolicies.unknownFields,
+        enumValidation: enforcementPolicies.enumValidation,
+      });
       coercionLog = coercion.changes;
+
+      // Check for enforcement rejections
+      const rejections = coercion.issues.filter(i => i.severity === 'rejection');
+      if (rejections.length > 0) {
+        return toolError(
+          `Enforcement policy rejected this operation:\n${rejections.map(r => `- ${r.message}`).join('\n')}`,
+          'VALIDATION_ERROR',
+        );
+      }
+      enforcementIssues = coercion.issues.filter(i => i.severity === 'warning');
+
       // Reconstruct updates with coerced values + null deletions
       coercedUpdates = { ...coercion.fields };
       for (const key of nullKeys) coercedUpdates[key] = null;
@@ -445,6 +486,7 @@ export function createServer(
 
     const response: Record<string, unknown> = { node, warnings };
     if (coercionLog.length > 0) response.coercion = coercionLog;
+    if (enforcementIssues.length > 0) response.enforcement_issues = enforcementIssues;
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(response) }],
@@ -1289,7 +1331,8 @@ export function createServer(
       if (!schema) {
         return toolError(`Schema not found: ${schema_name}`, 'NOT_FOUND');
       }
-      return { content: [{ type: 'text', text: JSON.stringify(schema) }] };
+      const policies = resolveEnforcementPolicies(enforcementConfig, [schema_name]);
+      return { content: [{ type: 'text', text: JSON.stringify({ ...schema, enforcement: policies }) }] };
     },
   );
 
@@ -1541,6 +1584,7 @@ export function createServer(
 
               if (fieldUpdates && nodeHasSchemas) {
                 const mergeResult = mergeSchemaFields(db, nodeTypes);
+                const bulkPolicies = resolveEnforcementPolicies(enforcementConfig, nodeTypes);
                 const toCoerce: Record<string, unknown> = {};
                 const nullKeys: string[] = [];
                 for (const [key, value] of Object.entries(fieldUpdates)) {
@@ -1551,7 +1595,17 @@ export function createServer(
                     toCoerce[key] = value;
                   }
                 }
-                const coercion = coerceFields(toCoerce, mergeResult, globalFields);
+                const coercion = coerceFields(toCoerce, mergeResult, globalFields, {
+                  unknownFields: bulkPolicies.unknownFields,
+                  enumValidation: bulkPolicies.enumValidation,
+                });
+                // Reject inside transaction → triggers rollback
+                const rejections = coercion.issues.filter(i => i.severity === 'rejection');
+                if (rejections.length > 0) {
+                  throw new Error(
+                    `Enforcement policy rejected bulk update on ${nodeId}:\n${rejections.map(r => `- ${r.message}`).join('\n')}`,
+                  );
+                }
                 coercedBulkUpdates = { ...coercion.fields };
                 for (const k of nullKeys) coercedBulkUpdates[k] = null;
               }

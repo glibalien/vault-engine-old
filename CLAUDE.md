@@ -69,11 +69,38 @@ Reverse of the parser — converts structured data back to markdown files.
 
 Write-path input coercion engine. Normalizes caller-provided field values to match schema definitions before serialization. Runs between tool handler and validator in `create-node`, `update-node`, and `batch-mutate`.
 
-- **`types.ts`** — `CoercionChange`, `CoercionResult`, `GlobalFieldDefinition`, `GlobalFieldsConfig`, `UnknownFieldPolicy` types.
-- **`coerce.ts`** — `coerceFields(fields, mergeResult, globalFields?, unknownFieldPolicy?)` applies coercion rules: scalar→list wrapping, reference wrapping (`"Alice"` → `"[[Alice]]"`), boolean coercion (`"true"` → `true`), number coercion (`"42"` → `42`), case-insensitive enum matching (`"TODO"` → `"todo"`). Resolves field type via fallback chain: per-type schema → global field definition → no coercion. Returns coerced fields + change log.
+- **`types.ts`** — `CoercionChange`, `CoercionResult`, `CoercionIssue`, `CoercionPolicies`, `GlobalFieldDefinition`, `GlobalFieldsConfig`, `UnknownFieldPolicy` types.
+- **`coerce.ts`** — `coerceFields(fields, mergeResult, globalFields?, policies?)` applies coercion rules: scalar→list wrapping, reference wrapping (`"Alice"` → `"[[Alice]]"`), boolean coercion (`"true"` → `true`), number coercion (`"42"` → `42`), case-insensitive enum matching (`"TODO"` → `"todo"`). Resolves field type via fallback chain: per-type schema → global field definition → no coercion. Returns coerced fields + change log + issues array. Accepts `CoercionPolicies` object with `unknownFields` (`warn`/`strip`/`reject`) and `enumValidation` (`coerce`/`warn`/`reject`) policies. Backward-compatible: also accepts legacy string for `unknownFields`.
 - **`aliases.ts`** — `resolveAliases(fields, knownFieldNames)` maps field name variations to canonical names: case-insensitive match, camelCase→snake_case, snake_case→space-separated. Runs before value coercion.
 - **`globals.ts`** — `loadGlobalFields(vaultPath)` reads `.schemas/_global.yaml` for cross-type field definitions. Returns `Record<string, GlobalFieldDefinition>`. Expands `canonical_name` entries.
 - **`index.ts`** — Re-exports all types and functions.
+
+### Enforcement Layer (`src/enforcement/`)
+
+Per-type enforcement configuration. Reads `.vault-engine/enforcement.yaml` to determine how strictly each schema type enforces field constraints. Loaded once at server startup alongside global fields.
+
+- **`types.ts`** — `EnforcementConfig` (mirrors YAML shape), `ResolvedPolicies` (flat resolved object), policy types: `NormalizeOnIndexPolicy` (`off`/`warn`/`fix`), `UnknownFieldsPolicy` (`warn`/`strip`/`reject`), `EnumValidationPolicy` (`coerce`/`warn`/`reject`).
+- **`loader.ts`** — `loadEnforcementConfig(vaultPath)` reads YAML, validates policy values, fills defaults. `resolveEnforcementPolicies(config, types)` resolves per-type overrides for a node's type set using "most restrictive wins" for multi-type nodes.
+- **`index.ts`** — Re-exports all types and functions.
+
+**Config file format** (`.vault-engine/enforcement.yaml`):
+```yaml
+enforcement:
+  normalize_on_index:
+    default: warn       # off | warn | fix
+    per_type:
+      task: fix
+  unknown_fields:
+    default: warn       # warn | strip | reject
+    per_type:
+      task: reject
+  enum_validation:
+    default: coerce     # coerce | warn | reject
+    per_type:
+      task: reject
+```
+
+Absent file → all defaults (`warn`/`warn`/`coerce`). Invalid values silently fall back to defaults. Multi-type nodes get the strictest policy across all their types.
 
 ### DB Layer (`src/db/`)
 

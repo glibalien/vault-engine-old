@@ -271,4 +271,110 @@ describe('coerceFields', () => {
       expect(changes).toHaveLength(0);
     });
   });
+
+  describe('issues array', () => {
+    it('is empty when no enforcement problems', () => {
+      const merge = makeMerge({ status: { type: 'string' } });
+      const { issues } = coerceFields({ status: 'ok' }, merge);
+      expect(issues).toEqual([]);
+    });
+  });
+
+  describe('unknown field reject policy', () => {
+    it('produces a rejection issue for unknown fields', () => {
+      const merge = makeMerge({ status: { type: 'string' } });
+      const { fields, unknownFields, issues } = coerceFields(
+        { status: 'ok', extra: 'value' },
+        merge,
+        undefined,
+        { unknownFields: 'reject' },
+      );
+      expect(unknownFields).toContain('extra');
+      expect(fields.extra).toBe('value');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        field: 'extra',
+        policy: 'unknown_fields',
+        severity: 'rejection',
+      });
+    });
+
+    it('does not produce issues for warn policy', () => {
+      const merge = makeMerge({ status: { type: 'string' } });
+      const { issues } = coerceFields(
+        { status: 'ok', extra: 'value' },
+        merge,
+        undefined,
+        { unknownFields: 'warn' },
+      );
+      expect(issues).toEqual([]);
+    });
+  });
+
+  describe('enum validation policy', () => {
+    it('silently passes invalid enum with default coerce policy', () => {
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const { fields, issues } = coerceFields({ status: 'invalid' }, merge);
+      expect(fields.status).toBe('invalid');
+      expect(issues).toEqual([]);
+    });
+
+    it('warns on invalid enum with warn policy', () => {
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const { fields, issues } = coerceFields(
+        { status: 'invalid' },
+        merge,
+        undefined,
+        { enumValidation: 'warn' },
+      );
+      expect(fields.status).toBe('invalid');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        field: 'status',
+        policy: 'enum_validation',
+        severity: 'warning',
+      });
+    });
+
+    it('rejects invalid enum with reject policy', () => {
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const { fields, issues } = coerceFields(
+        { status: 'invalid' },
+        merge,
+        undefined,
+        { enumValidation: 'reject' },
+      );
+      expect(fields.status).toBe('invalid');
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        field: 'status',
+        policy: 'enum_validation',
+        severity: 'rejection',
+      });
+    });
+
+    it('still coerces valid case-insensitive match even with reject policy', () => {
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const { fields, issues } = coerceFields(
+        { status: 'TODO' },
+        merge,
+        undefined,
+        { enumValidation: 'reject' },
+      );
+      expect(fields.status).toBe('todo');
+      expect(issues).toEqual([]);
+    });
+
+    it('no issue when exact enum match with reject policy', () => {
+      const merge = makeMerge({ status: { type: 'enum', values: ['todo', 'done'] } });
+      const { fields, issues } = coerceFields(
+        { status: 'todo' },
+        merge,
+        undefined,
+        { enumValidation: 'reject' },
+      );
+      expect(fields.status).toBe('todo');
+      expect(issues).toEqual([]);
+    });
+  });
 });

@@ -1,6 +1,7 @@
 // src/coercion/coerce.ts
 import type { MergeResult } from '../schema/types.js';
-import type { CoercionChange, CoercionResult, GlobalFieldDefinition, UnknownFieldPolicy } from './types.js';
+import type { EnumValidationPolicy } from '../enforcement/types.js';
+import type { CoercionChange, CoercionIssue, CoercionPolicies, CoercionResult, GlobalFieldDefinition, UnknownFieldPolicy } from './types.js';
 import { resolveAliases } from './aliases.js';
 
 const WIKI_LINK_RE = /^\[\[.+\]\]$/;
@@ -13,8 +14,10 @@ function coerceValue(
   key: string,
   value: unknown,
   schemaType: string,
-  enumValues?: string[],
-  changes: CoercionChange[] = [],
+  enumValues: string[] | undefined,
+  changes: CoercionChange[],
+  issues: CoercionIssue[],
+  enumPolicy: EnumValidationPolicy,
 ): unknown {
   // Scalar → list wrapping
   if (schemaType === 'list<reference>' || schemaType === 'list<string>') {
@@ -84,13 +87,32 @@ function coerceValue(
     return value;
   }
 
-  // Enum case-insensitive matching
+  // Enum case-insensitive matching + validation
   if (schemaType === 'enum' && typeof value === 'string' && enumValues) {
     const match = enumValues.find(v => v.toLowerCase() === value.toLowerCase());
-    if (match && match !== value) {
-      changes.push({ field: key, rule: 'enum_case', from: value, to: match });
+    if (match) {
+      if (match !== value) {
+        changes.push({ field: key, rule: 'enum_case', from: value, to: match });
+      }
       return match;
     }
+    // No match found — apply enum validation policy
+    if (enumPolicy === 'reject') {
+      issues.push({
+        field: key,
+        policy: 'enum_validation',
+        severity: 'rejection',
+        message: `Value '${value}' is not a valid enum value for '${key}' (expected: ${enumValues.join(', ')})`,
+      });
+    } else if (enumPolicy === 'warn') {
+      issues.push({
+        field: key,
+        policy: 'enum_validation',
+        severity: 'warning',
+        message: `Value '${value}' is not a valid enum value for '${key}' (expected: ${enumValues.join(', ')})`,
+      });
+    }
+    // 'coerce' policy: silent passthrough (existing behavior)
     return value;
   }
 
@@ -101,10 +123,19 @@ export function coerceFields(
   fields: Record<string, unknown>,
   mergeResult: MergeResult,
   globalFields?: Record<string, GlobalFieldDefinition>,
-  unknownFieldPolicy: UnknownFieldPolicy = 'warn',
+  policiesOrLegacy?: CoercionPolicies | UnknownFieldPolicy,
 ): CoercionResult {
+  // Backward compat: accept string (legacy) or object
+  const policies: CoercionPolicies =
+    typeof policiesOrLegacy === 'string'
+      ? { unknownFields: policiesOrLegacy }
+      : policiesOrLegacy ?? {};
+
+  const unknownFieldPolicy = policies.unknownFields ?? 'warn';
+  const enumPolicy = policies.enumValidation ?? 'coerce';
   const changes: CoercionChange[] = [];
   const unknownFields: string[] = [];
+  const issues: CoercionIssue[] = [];
 
   // Step 1: Resolve aliases (camelCase → snake_case, known variations)
   const knownFieldNames = new Set([
@@ -125,15 +156,26 @@ export function coerceFields(
     const enumValues = schemaDef?.values ?? globalDef?.values;
 
     if (fieldType) {
-      result[key] = coerceValue(key, value, fieldType, enumValues, changes);
+      result[key] = coerceValue(key, value, fieldType, enumValues, changes, issues, enumPolicy);
     } else {
       // Unknown field — not in any schema or global definition
       unknownFields.push(key);
-      if (unknownFieldPolicy !== 'strip') {
+      if (unknownFieldPolicy === 'reject') {
+        issues.push({
+          field: key,
+          policy: 'unknown_fields',
+          severity: 'rejection',
+          message: `Unknown field '${key}' rejected by enforcement policy`,
+        });
+        result[key] = value;
+      } else if (unknownFieldPolicy === 'strip') {
+        // strip: omit from result
+      } else {
+        // 'warn' or 'pass': keep the field
         result[key] = value;
       }
     }
   }
 
-  return { fields: result, changes, unknownFields };
+  return { fields: result, changes, unknownFields, issues };
 }

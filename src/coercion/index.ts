@@ -3,6 +3,8 @@ export { resolveAliases } from './aliases.js';
 export { loadGlobalFields } from './globals.js';
 export type {
   CoercionChange,
+  CoercionIssue,
+  CoercionPolicies,
   CoercionResult,
   GlobalFieldDefinition,
   GlobalFieldsConfig,
