@@ -27,6 +27,9 @@ import type { ImageContent, TextContent } from '../attachments/types.js';
 import { normalizeFields } from './normalize-fields.js';
 import { findDuplicates } from './duplicates.js';
 import { buildQuerySql } from './query-builder.js';
+import { coerceFields } from '../coercion/coerce.js';
+import { loadGlobalFields } from '../coercion/globals.js';
+import type { GlobalFieldDefinition } from '../coercion/types.js';
 import { createProvider } from '../embeddings/provider-factory.js';
 import { semanticSearch, getPendingEmbeddingCount } from '../embeddings/search.js';
 import type { EmbeddingConfig, EmbeddingProvider } from '../embeddings/types.js';
@@ -56,6 +59,9 @@ export function createServer(
   const embeddingProvider: EmbeddingProvider | null = opts?.embeddingConfig
     ? createProvider(opts.embeddingConfig)
     : null;
+
+  // Load global field definitions for write-path coercion
+  let globalFields: Record<string, GlobalFieldDefinition> = loadGlobalFields(vaultPath);
 
   // Shared helper: hydrate node rows with types and fields
   function hydrateNodes(
@@ -156,13 +162,23 @@ export function createServer(
     const fields = { ...params.fields };
     let body = inputBody ?? '';
 
-    // Step 1: Validate against schemas (if any types have schemas)
+    // Step 1: Coerce + validate against schemas (if any types have schemas)
     const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
     const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
     let mergeResult = hasSchemas ? mergeSchemaFields(db, types) : null;
     let warnings: ValidationWarning[] = [];
+    let coercionLog: unknown[] = [];
 
     if (mergeResult) {
+      // Coerce fields before validation
+      const coercion = coerceFields(fields, mergeResult, globalFields);
+      Object.assign(fields, coercion.fields);
+      // Replace fields with coerced version (clear keys that were aliased away)
+      for (const key of Object.keys(fields)) {
+        if (!(key in coercion.fields)) delete fields[key];
+      }
+      coercionLog = coercion.changes;
+
       const parsed = {
         filePath: 'pending',
         frontmatter: {},
@@ -257,8 +273,11 @@ export function createServer(
 
     const [node] = hydrateNodes([row]);
 
+    const response: Record<string, unknown> = { node, warnings };
+    if (coercionLog.length > 0) response.coercion = coercionLog;
+
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(response) }],
     };
   }
 
@@ -316,14 +335,40 @@ export function createServer(
     // Types: use provided value, else existing
     const types = newTypes !== undefined ? newTypes : parsed.types;
 
-    // Merge fields: existing (excluding meta-keys) + updates
+    // Coerce field updates before merging
+    const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+    const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
+    let coercionLog: unknown[] = [];
+    let coercedUpdates = fieldUpdates;
+
+    if (fieldUpdates && hasSchemas) {
+      const mergeResult = mergeSchemaFields(db, types);
+      // Only coerce non-null values (null means "delete field")
+      const toCoerce: Record<string, unknown> = {};
+      const nullKeys: string[] = [];
+      for (const [key, value] of Object.entries(fieldUpdates)) {
+        if (key === 'title' || key === 'types') continue;
+        if (value === null) {
+          nullKeys.push(key);
+        } else {
+          toCoerce[key] = value;
+        }
+      }
+      const coercion = coerceFields(toCoerce, mergeResult, globalFields);
+      coercionLog = coercion.changes;
+      // Reconstruct updates with coerced values + null deletions
+      coercedUpdates = { ...coercion.fields };
+      for (const key of nullKeys) coercedUpdates[key] = null;
+    }
+
+    // Merge fields: existing (excluding meta-keys) + coerced updates
     const mergedFields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(parsed.frontmatter)) {
       if (key === 'title' || key === 'types') continue;
       mergedFields[key] = value;
     }
-    if (fieldUpdates) {
-      for (const [key, value] of Object.entries(fieldUpdates)) {
+    if (coercedUpdates) {
+      for (const [key, value] of Object.entries(coercedUpdates)) {
         if (key === 'title' || key === 'types') continue;
         if (value === null) {
           delete mergedFields[key];
@@ -344,8 +389,6 @@ export function createServer(
     }
 
     // Validate against schemas
-    const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
-    const hasSchemas = types.some(t => schemaCheck.get(t) !== undefined);
     let warnings: ValidationWarning[] = [];
 
     if (hasSchemas) {
@@ -400,8 +443,11 @@ export function createServer(
 
     const [node] = hydrateNodes([row]);
 
+    const response: Record<string, unknown> = { node, warnings };
+    if (coercionLog.length > 0) response.coercion = coercionLog;
+
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ node, warnings }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(response) }],
     };
   }
 
@@ -1488,14 +1534,36 @@ export function createServer(
               // Types: provided or existing
               const nodeTypes = types !== undefined ? types : parsed.types;
 
-              // Merge fields: existing (excluding meta-keys) + updates
+              // Coerce field updates before merging
+              const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
+              const nodeHasSchemas = nodeTypes.some(t => schemaCheck.get(t) !== undefined);
+              let coercedBulkUpdates = fieldUpdates;
+
+              if (fieldUpdates && nodeHasSchemas) {
+                const mergeResult = mergeSchemaFields(db, nodeTypes);
+                const toCoerce: Record<string, unknown> = {};
+                const nullKeys: string[] = [];
+                for (const [key, value] of Object.entries(fieldUpdates)) {
+                  if (key === 'title' || key === 'types') continue;
+                  if (value === null) {
+                    nullKeys.push(key);
+                  } else {
+                    toCoerce[key] = value;
+                  }
+                }
+                const coercion = coerceFields(toCoerce, mergeResult, globalFields);
+                coercedBulkUpdates = { ...coercion.fields };
+                for (const k of nullKeys) coercedBulkUpdates[k] = null;
+              }
+
+              // Merge fields: existing (excluding meta-keys) + coerced updates
               const mergedFields: Record<string, unknown> = {};
               for (const [key, value] of Object.entries(parsed.frontmatter)) {
                 if (key === 'title' || key === 'types') continue;
                 mergedFields[key] = value;
               }
-              if (fieldUpdates) {
-                for (const [key, value] of Object.entries(fieldUpdates)) {
+              if (coercedBulkUpdates) {
+                for (const [key, value] of Object.entries(coercedBulkUpdates)) {
                   if (key === 'title' || key === 'types') continue;
                   if (value === null) {
                     delete mergedFields[key];
@@ -1506,9 +1574,7 @@ export function createServer(
               }
 
               // Validate against schemas
-              const schemaCheck = db.prepare('SELECT 1 FROM schemas WHERE name = ?');
-              const hasSchemas = nodeTypes.some(t => schemaCheck.get(t) !== undefined);
-              if (hasSchemas) {
+              if (nodeHasSchemas) {
                 const mergeResult = mergeSchemaFields(db, nodeTypes);
                 const forValidation = {
                   filePath: nodeId,
@@ -1841,8 +1907,9 @@ export function createServer(
         const schemas = generateSchemas(analysis, mode as InferenceMode, existingSchemas);
         const filesWritten = writeSchemaFiles(schemas, vaultPath);
 
-        // Reload schemas into DB so changes take effect immediately
+        // Reload schemas and global fields so changes take effect immediately
         loadSchemas(db, vaultPath);
+        globalFields = loadGlobalFields(vaultPath);
 
         response.files_written = filesWritten;
       }

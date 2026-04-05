@@ -65,6 +65,16 @@ Reverse of the parser — converts structured data back to markdown files.
 - **gray-matter auto-converts dates** to `Date` objects. `inferType` checks `instanceof Date`.
 - **`Position` type** comes from `unist`, not `mdast`.
 
+### Coercion Layer (`src/coercion/`)
+
+Write-path input coercion engine. Normalizes caller-provided field values to match schema definitions before serialization. Runs between tool handler and validator in `create-node`, `update-node`, and `batch-mutate`.
+
+- **`types.ts`** — `CoercionChange`, `CoercionResult`, `GlobalFieldDefinition`, `GlobalFieldsConfig`, `UnknownFieldPolicy` types.
+- **`coerce.ts`** — `coerceFields(fields, mergeResult, globalFields?, unknownFieldPolicy?)` applies coercion rules: scalar→list wrapping, reference wrapping (`"Alice"` → `"[[Alice]]"`), boolean coercion (`"true"` → `true`), number coercion (`"42"` → `42`), case-insensitive enum matching (`"TODO"` → `"todo"`). Resolves field type via fallback chain: per-type schema → global field definition → no coercion. Returns coerced fields + change log.
+- **`aliases.ts`** — `resolveAliases(fields, knownFieldNames)` maps field name variations to canonical names: case-insensitive match, camelCase→snake_case, snake_case→space-separated. Runs before value coercion.
+- **`globals.ts`** — `loadGlobalFields(vaultPath)` reads `.schemas/_global.yaml` for cross-type field definitions. Returns `Record<string, GlobalFieldDefinition>`. Expands `canonical_name` entries.
+- **`index.ts`** — Re-exports all types and functions.
+
 ### DB Layer (`src/db/`)
 
 Database connection and schema management.
@@ -167,7 +177,7 @@ Loads `dotenv/config` first (reads `.env` for `FIREWORKS_API_KEY` etc.), then op
 YAML-driven schema definitions with inheritance, multi-type field merging, and validation.
 
 - **`types.ts`** — `SchemaDefinition`, `FieldDefinition`, `ResolvedSchema`, `MergedField`, `MergeConflict`, `MergeResult`, `ValidationWarning`, `ValidationResult`.
-- **`loader.ts`** — `loadSchemas(db, vaultPath)` reads `.schemas/*.yaml`, resolves `extends` inheritance (topological sort, cycle detection), stores in `schemas` table. `getSchema(db, name)` and `getAllSchemas(db)` read back.
+- **`loader.ts`** — `loadSchemas(db, vaultPath)` reads `.schemas/*.yaml` (skips files starting with `_`, e.g. `_global.yaml`), resolves `extends` inheritance (topological sort, cycle detection), stores in `schemas` table. `getSchema(db, name)` and `getAllSchemas(db)` read back.
 - **`merger.ts`** — `mergeSchemaFields(db, types)` merges field definitions from multiple schemas. Compatible fields merge; incompatible types produce conflicts. Enum values union.
 - **`validator.ts`** — `validateNode(parsed, mergeResult)` checks required fields, type compatibility, enum values, reference syntax. Warns, never rejects.
 - **`index.ts`** — Re-exports all types and functions.

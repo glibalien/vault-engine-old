@@ -13,7 +13,9 @@ interface ParsedSchema {
 function readSchemaFiles(schemasDir: string): ParsedSchema[] {
   if (!existsSync(schemasDir)) return [];
 
-  const files = readdirSync(schemasDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+  const files = readdirSync(schemasDir).filter(
+    f => (f.endsWith('.yaml') || f.endsWith('.yml')) && !f.startsWith('_'),
+  );
   const results: ParsedSchema[] = [];
 
   for (const file of files) {
