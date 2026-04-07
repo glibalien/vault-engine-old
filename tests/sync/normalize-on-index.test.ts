@@ -555,4 +555,44 @@ describe('watcher with normalize-on-index', () => {
     const diskContent = readFileSync(join(tmpVault, 'tasks', 'skip-watch.md'), 'utf-8');
     expect(diskContent).toContain('Status: Todo');
   });
+
+  it('does not re-trigger watcher after normalize-on-index write', async () => {
+    const config = makeConfig('fix');
+    let indexCount = 0;
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+    const stderrSpy = (chunk: any, ...args: any[]) => {
+      if (typeof chunk === 'string' && chunk.includes('watcher: indexed tasks/loop.md')) {
+        indexCount++;
+      }
+      return originalStderrWrite(chunk, ...args);
+    };
+    process.stderr.write = stderrSpy as any;
+
+    try {
+      handle = watchVault(db, tmpVault, {
+        enforcementConfig: config,
+        globalFields: {},
+        debounceMs: 100,
+      });
+      await handle.ready;
+
+      mkdirSync(join(tmpVault, 'tasks'), { recursive: true });
+      writeFileSync(
+        join(tmpVault, 'tasks', 'loop.md'),
+        '---\ntitle: Loop Test\ntypes: [task]\nStatus: Todo\n---\n\nBody.\n',
+      );
+
+      // Wait for the file to be indexed
+      await waitFor(() =>
+        db.prepare("SELECT * FROM nodes WHERE id = 'tasks/loop.md'").get() !== undefined,
+      );
+
+      // Wait extra time to verify no second trigger
+      await new Promise(resolve => setTimeout(resolve, 800));
+
+      expect(indexCount).toBe(1);
+    } finally {
+      process.stderr.write = originalStderrWrite;
+    }
+  });
 });
