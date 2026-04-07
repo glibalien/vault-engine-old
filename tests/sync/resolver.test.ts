@@ -451,3 +451,63 @@ describe('resolveTargetWithMaps (exported)', () => {
     expect(resolveTargetWithMaps('Alice Smith', titleMap, pathMap)).toBeNull();
   });
 });
+
+describe('Unicode-normalized resolution', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('resolves straight apostrophe wiki-link to curly apostrophe filename', () => {
+    const raw = '---\ntitle: "Alice\u2019s Notes"\ntypes: [note]\n---\nContent';
+    const parsed = parseFile('Alice\u2019s Notes.md', raw);
+    indexFile(db, parsed, 'Alice\u2019s Notes.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const result = resolveTarget(db, "Alice's Notes");
+    expect(result).toBe('Alice\u2019s Notes.md');
+  });
+
+  it('resolves curly apostrophe wiki-link to straight apostrophe filename', () => {
+    const raw = "---\ntitle: \"Alice's Notes\"\ntypes: [note]\n---\nContent";
+    const parsed = parseFile("Alice's Notes.md", raw);
+    indexFile(db, parsed, "Alice's Notes.md", '2025-03-10T00:00:00.000Z', raw);
+
+    const result = resolveTarget(db, 'Alice\u2019s Notes');
+    expect(result).toBe("Alice's Notes.md");
+  });
+
+  it('resolves NFC-decomposed wiki-link to NFC-composed filename', () => {
+    const raw = '---\ntitle: "Caf\u00E9"\ntypes: [note]\n---\nContent';
+    const parsed = parseFile('Caf\u00E9.md', raw);
+    indexFile(db, parsed, 'Caf\u00E9.md', '2025-03-10T00:00:00.000Z', raw);
+
+    // Decomposed é
+    const result = resolveTarget(db, 'Caf\u0065\u0301');
+    expect(result).toBe('Caf\u00E9.md');
+  });
+
+  it('resolves em-dash wiki-link to hyphen filename', () => {
+    const raw = '---\ntitle: "A-B"\ntypes: [note]\n---\nContent';
+    const parsed = parseFile('A-B.md', raw);
+    indexFile(db, parsed, 'A-B.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const result = resolveTarget(db, 'A\u2014B');
+    expect(result).toBe('A-B.md');
+  });
+
+  it('still resolves exact matches normally', () => {
+    const raw = readFileSync(resolve(fixturesDir, 'sample-task.md'), 'utf-8');
+    const parsed = parseFile('tasks/review.md', raw);
+    indexFile(db, parsed, 'tasks/review.md', '2025-03-10T00:00:00.000Z', raw);
+
+    const result = resolveTarget(db, 'Review vendor proposals');
+    expect(result).toBe('tasks/review.md');
+  });
+});

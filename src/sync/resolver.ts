@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { normalizeForLookup } from '../mcp/resolve.js';
 
 interface NodeLookupRow {
   id: string;
@@ -16,7 +17,7 @@ export function buildLookupMaps(db: Database.Database): {
   for (const row of rows) {
     // Title-based lookup
     if (row.title) {
-      const key = row.title.toLowerCase();
+      const key = normalizeForLookup(row.title);
       const existing = titleMap.get(key);
       if (existing) existing.push(row.id);
       else titleMap.set(key, [row.id]);
@@ -27,7 +28,7 @@ export function buildLookupMaps(db: Database.Database): {
     const pathWithoutExt = row.id.replace(/\.md$/, '');
     const parts = pathWithoutExt.split('/');
     for (let i = parts.length - 1; i >= 0; i--) {
-      const suffix = parts.slice(i).join('/').toLowerCase();
+      const suffix = normalizeForLookup(parts.slice(i).join('/'));
       const existing = pathMap.get(suffix);
       if (existing) existing.push(row.id);
       else pathMap.set(suffix, [row.id]);
@@ -81,7 +82,7 @@ export function resolveTargetWithMaps(
   titleMap: Map<string, string[]>,
   pathMap: Map<string, string[]>,
 ): string | null {
-  const target = wikiLinkTarget.toLowerCase();
+  const target = normalizeForLookup(wikiLinkTarget);
 
   // 1. Try title match
   const titleMatches = titleMap.get(target);
