@@ -107,7 +107,7 @@ Absent file → all defaults (`warn`/`warn`/`coerce`). Invalid values silently f
 Database connection and schema management.
 
 - **`connection.ts`** — `openDatabase(dbPath)` factory. Configures WAL mode, foreign keys, busy timeout. Creates parent directories for file-based DBs.
-- **`schema.ts`** — `createSchema(db)` runs idempotent DDL: 7 tables (nodes, node_types, nodes_fts, fields, relationships, schemas, files), 9 indices, 3 FTS5 sync triggers. No migration tracking — DB is rebuildable.
+- **`schema.ts`** — `createSchema(db)` runs idempotent DDL: 7 tables (nodes, node_types, nodes_fts, fields, relationships, schemas, files), 9 indices, 3 FTS5 sync triggers. No migration tracking — DB is rebuildable. `nodes` table uses `file_mtime` (last disk modification time) and `indexed_at` (when the engine last indexed the node) rather than a generic `updated_at`.
 - **`index.ts`** — Re-exports `openDatabase` and `createSchema`.
 
 ### Sync Layer (`src/sync/`)
@@ -116,6 +116,7 @@ File-to-database indexing pipeline.
 
 - **`indexer.ts`** — `indexFile(db, parsed, relativePath, mtime, raw)` writes one parsed file into all DB tables (nodes, node_types, fields, relationships, files). Uses delete-then-insert for child tables. Does not manage transactions. `deleteFile(db, relativePath)` removes all DB rows for a file path (relationships, fields, node_types, nodes, files). `rebuildIndex(db, vaultPath)` scans all `.md` files, clears the DB, and indexes everything in one transaction. `incrementalIndex(db, vaultPath)` scans files, compares mtime then SHA-256 hash against the `files` table, only re-indexes changed/new files, and removes DB entries for deleted files. Returns `{ indexed, skipped, deleted }`.
 - **`watcher.ts`** — `watchVault(db, vaultPath, opts?)` creates a chokidar watcher on the vault directory. Returns `{ close(), ready }`. Watches only `.md` files with `ignoreInitial: true`. Per-file debounce (default 300ms) prevents double-indexing on rapid saves. `add`/`change` events trigger `parseFile` + `indexFile`; `unlink` triggers `deleteFile`. Write lock functions (`acquireWriteLock`/`releaseWriteLock`/`isWriteLocked`) allow Phase 3 serializer to prevent re-indexing of engine-written files. Global write lock functions (`acquireGlobalWriteLock`/`releaseGlobalWriteLock`/`isGlobalWriteLocked`) suppress ALL watcher events during bulk operations like normalize-fields. Per-file locks remain for single-file write tools.
+- **`reconciler.ts`** — `reconcileOnce(db, vaultPath)` runs `incrementalIndex` on demand. `startReconciler(db, vaultPath, opts?)` runs it periodically (30s first tick, 5m interval). Safety net for dropped chokidar events. Shares indexing logic with the watcher — same `incrementalIndex` under the hood.
 - **`index.ts`** — Re-exports `indexFile`, `rebuildIndex`, `deleteFile`, `incrementalIndex`, `watchVault`, `acquireWriteLock`, `releaseWriteLock`, `isWriteLocked`.
 
 ### Search Layer (`src/search/`)
@@ -133,7 +134,7 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
 - **`server.ts`** — `createServer(db, vaultPath)` creates an `McpServer` with 25 tools registered. Returns the server instance (caller connects transport). Contains `hydrateNodes` (batch-loads types + fields), `loadNodeForValidation` (reconstructs `FieldEntry[]` from DB), `inferFieldType` (JS value → `FieldValueType`), and `toolError` (structured error response) helpers.
   - **`list-types`** — No params. Returns distinct types from `node_types` with counts.
   - **`get-node`** — Returns full node details by ID (vault-relative path) or title. Optional `title` param for wiki-link-style lookup when directory is unknown. Optional `include_relationships` and `include_computed` flags.
-  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `references` (relationship-based filtering by target/direction/rel_type), `path_prefix` (folder scoping), `since` (updated_at filter), `order_by`, and `limit`. Reference-aware field filtering (strips `[[]]` brackets for eq/neq/contains/in). SQL construction extracted to `query-builder.ts`.
+  - **`query-nodes`** — Structured search with optional `schema_type`, `full_text` (FTS5), field `filters` (8 operators: eq, neq, gt, lt, gte, lte, contains, in), `references` (relationship-based filtering by target/direction/rel_type), `path_prefix` (folder scoping), `since` (indexed_at filter — nodes the engine indexed after a given time), `modified_since` (file_mtime filter — files modified on disk after a given time), `order_by`, and `limit`. Reference-aware field filtering (strips `[[]]` brackets for eq/neq/contains/in). SQL construction extracted to `query-builder.ts`.
   - **`list-schemas`** — No params. Returns schema summaries (name, display_name, icon, extends, ancestors, field_count) from the `schemas` table. Distinct from `list-types` (indexed data vs YAML definitions).
   - **`describe-schema`** — Returns full `ResolvedSchema` by name, including inherited fields.
   - **`validate-node`** — Two modes: by `node_id` (loads from DB) or hypothetical (`types: string[]` + `fields`). Runs `mergeSchemaFields` + `validateNode` pipeline.
@@ -159,6 +160,7 @@ MCP server exposing query, mutation, and workflow tools over the indexed vault.
 - **`update-schema.ts`** — Core `updateSchema(db, vaultPath, schemaName, operations)` function. Reads raw YAML from disk (not resolved DB schema), applies operations, validates, writes via `stringifyYaml(schema, { lineWidth: 0 })`, reloads via `loadSchemas`. File snapshot/rollback pattern for reload failures.
 - **`query-builder.ts`** — Extracted SQL construction for `query-nodes`. `buildQuerySql(opts)` handles FTS, type filter, field filters (reference-aware), references JOIN, since, path_prefix, order_by. Reused by `update-node` bulk mode.
 - **`duplicates.ts`** — `findDuplicates(db, opts)` implements title similarity (exact + Levenshtein) with optional field overlap refinement.
+- **`resolve.ts`** — `resolveById(db, nodeId)` and `resolveByTitle(db, title)` with three-tier normalization: exact → NFC → typographic. Returns `ResolveResult` with `matchType` tracking. `normalizeTypographic(str)` maps smart quotes, em-dashes, ellipsis, NBSP to ASCII equivalents. Used by all tool handlers for node lookup.
 - **`workflow-tools.ts`** — Handlers for workflow tools (daily-summary, project-status, create-meeting-notes, extract-tasks). Contains `computeProjectTaskStats` shared helper.
 
 ### Attachments Layer (`src/attachments/`)
