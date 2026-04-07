@@ -5,12 +5,14 @@ A local-first, MCP-native knowledge graph engine that indexes markdown vaults in
 ## Design Principles
 
 - **Markdown is canonical.** Every piece of structural data — types, fields, relationships — lives in frontmatter and wiki-links. The database is always rebuildable from files. If the DB is deleted, nothing is lost.
-- **Every meaningful entity gets its own file.** Tasks, projects, people, meetings — each is a separate `.md` file with its own frontmatter.
-- **Editor-agnostic.** Works with Obsidian, Typora, VS Code, iA Writer, or anything that reads markdown.
-- **The agent is the primary interface.** Creating nodes, querying, managing tasks, organizing knowledge — all agent-driven via MCP tools.
-- **Multi-typed, composable nodes.** Any node can have multiple types via `types: [meeting, task]` in frontmatter. Types are additive.
-- **Relationships are wiki-links.** `[[wiki-links]]` in frontmatter fields become typed relationships; in body they become contextual links.
-- **Schema-aware, not schema-enforced.** Schemas guide the agent and enable queries, but files that violate schema are still valid markdown. The engine warns; it doesn't reject.
+- **Every meaningful entity gets its own file.** Tasks, projects, people, meetings — each is a separate `.md` file with its own frontmatter. Focused, linkable, independently valid.
+- **Editor-agnostic.** Does not depend on any specific editor or plugin. Any editor that opens `.md` files works — Obsidian, Typora, VS Code, iA Writer, or plain `vim`.
+- **The agent is the primary interface.** Creating nodes, querying, managing tasks, organizing knowledge — all agent-driven via MCP tools. The editor is a viewport for reading and writing prose, not the control surface.
+- **Multi-typed, composable nodes.** Any node can have multiple types via `types: [meeting, task]` in frontmatter. Types are additive — they contribute fields and behaviors without constraining identity. Schema inheritance (`extends`) is resolved at the schema level.
+- **Relationships are wiki-links.** `[[wiki-links]]` in frontmatter fields become typed relationships; in body they become contextual links. The engine indexes these but does not invent relationships that aren't in the markdown.
+- **Incremental by default.** Every operation — indexing, querying, syncing — handles single-file changes without full rebuilds. File watching with per-file debounce keeps the index fresh.
+- **Runs on cheap models.** Tool interfaces are explicit, well-documented, and low-ambiguity. Required fields clearly marked, enum values explicit, structured JSON responses. A capable open model should be able to use every tool correctly.
+- **Schema-aware with configurable enforcement.** Schemas guide the agent and enable queries. By default, the engine warns on violations — it doesn't reject. Per-type enforcement policies can optionally tighten this (strip unknown fields, reject invalid enums, auto-normalize on index).
 
 ## Technology Stack
 
