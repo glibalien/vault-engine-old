@@ -7,6 +7,8 @@ import { openDatabase, createSchema } from './db/index.js';
 import { createServer } from './mcp/server.js';
 import { loadSchemas } from './schema/index.js';
 import { incrementalIndex, watchVault } from './sync/index.js';
+import { loadEnforcementConfig } from './enforcement/index.js';
+import { loadGlobalFields } from './coercion/globals.js';
 import { loadVecExtension, createVecTable, getVecDimensions, dropVecTable, createProvider, startEmbeddingWorker } from './embeddings/index.js';
 import type { EmbeddingConfig } from './embeddings/types.js';
 import { parseArgs } from './transport/args.js';
@@ -21,6 +23,15 @@ const vaultPath = args.vaultPath ?? resolve(dirname(dbPath), '..');
 const db = openDatabase(dbPath);
 createSchema(db);
 loadSchemas(db, vaultPath);
+
+// Load enforcement and global field config for normalize-on-index
+const enforcementConfig = loadEnforcementConfig(vaultPath);
+const globalFields = loadGlobalFields(vaultPath);
+const skipNormalize = process.env.VAULT_ENGINE_SKIP_NORMALIZE === '1';
+
+if (skipNormalize) {
+  console.error('[vault-engine] normalize-on-index: disabled via VAULT_ENGINE_SKIP_NORMALIZE');
+}
 
 // Load embedding config from .vault-engine/config.json if it exists
 let embeddingConfig: EmbeddingConfig | undefined;
@@ -62,11 +73,21 @@ if (embeddingConfig) {
 }
 
 // Index vault on startup (incremental — fast if DB already populated)
-const indexResult = incrementalIndex(db, vaultPath);
-console.error(`[vault-engine] indexed ${indexResult.indexed}, skipped ${indexResult.skipped}, deleted ${indexResult.deleted}`);
+const indexResult = incrementalIndex(db, vaultPath, {
+  enforcementConfig,
+  globalFields,
+  skipNormalize,
+});
+console.error(`[vault-engine] indexed ${indexResult.indexed}, skipped ${indexResult.skipped}, deleted ${indexResult.deleted}, normalized ${indexResult.normalized}`);
+if (indexResult.normalized > 0) {
+  console.error(`[vault-engine] normalize-on-index: fixed ${indexResult.normalized} file(s)`);
+}
 
 // Start file watcher for live re-indexing of external changes
 const watcher = watchVault(db, vaultPath, {
+  enforcementConfig,
+  globalFields,
+  skipNormalize,
   onSchemaChange: () => loadSchemas(db, vaultPath),
 });
 await watcher.ready;
