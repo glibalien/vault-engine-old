@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { resolveById } from '../mcp/resolve.js';
 
 export interface TraverseOptions {
   node_id: string;
@@ -88,17 +89,18 @@ export function traverseGraph(db: Database.Database, options: TraverseOptions): 
   const { node_id, direction, rel_types, target_types } = options;
   const maxDepth = Math.max(1, Math.min(MAX_DEPTH_LIMIT, options.max_depth));
 
-  const rootRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id) as { id: string } | undefined;
-  if (!rootRow) {
+  const resolved = resolveById(db, node_id);
+  if (!resolved.found) {
     throw new Error(`Node not found: ${node_id}`);
   }
+  const canonicalId = resolved.node.id;
 
   const relTypesSet = rel_types ? new Set(rel_types) : null;
-  const visited = new Set<string>([node_id]);
-  const depthMap = new Map<string, number>([[node_id, 0]]);
+  const visited = new Set<string>([canonicalId]);
+  const depthMap = new Map<string, number>([[canonicalId, 0]]);
   const edges: TraverseEdge[] = [];
   const seenEdgeIds = new Set<number>();
-  let currentLevel = [node_id];
+  let currentLevel = [canonicalId];
   let currentDepth = 0;
 
   while (currentLevel.length > 0 && currentDepth < maxDepth) {
@@ -135,7 +137,7 @@ export function traverseGraph(db: Database.Database, options: TraverseOptions): 
   }
 
   let nodeIds = Array.from(depthMap.entries())
-    .filter(([id]) => id !== node_id)
+    .filter(([id]) => id !== canonicalId)
     .map(([id, depth]) => ({ id, depth }));
 
   if (target_types && target_types.length > 0) {
@@ -159,5 +161,5 @@ export function traverseGraph(db: Database.Database, options: TraverseOptions): 
     }
   }
 
-  return { root_id: node_id, node_ids: nodeIds, edges };
+  return { root_id: canonicalId, node_ids: nodeIds, edges };
 }

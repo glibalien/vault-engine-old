@@ -28,6 +28,8 @@ import { normalizeFields } from './normalize-fields.js';
 import { findDuplicates } from './duplicates.js';
 import { updateSchema, type SchemaOperation } from './update-schema.js';
 import { buildQuerySql } from './query-builder.js';
+import { resolveById } from './resolve.js';
+import type { ResolveResult, MatchTier } from './resolve.js';
 import { coerceFields } from '../coercion/coerce.js';
 import { loadGlobalFields } from '../coercion/globals.js';
 import type { GlobalFieldDefinition } from '../coercion/types.js';
@@ -120,17 +122,18 @@ export function createServer(
   }
 
   function loadNodeForValidation(nodeId: string): { types: string[]; fields: FieldEntry[] } | null {
-    const node = db.prepare('SELECT id FROM nodes WHERE id = ?').get(nodeId) as { id: string } | undefined;
-    if (!node) return null;
+    const resolved = resolveById(db, nodeId);
+    if (!resolved.found) return null;
+    const resolvedNodeId = resolved.node.id;
 
     const typeRows = db.prepare(
       'SELECT schema_type FROM node_types WHERE node_id = ?'
-    ).all(nodeId) as Array<{ schema_type: string }>;
+    ).all(resolvedNodeId) as Array<{ schema_type: string }>;
     const types = typeRows.map(r => r.schema_type);
 
     const fieldRows = db.prepare(
       'SELECT key, value_text, value_type, value_number, value_date FROM fields WHERE node_id = ?'
-    ).all(nodeId) as Array<{ key: string; value_text: string; value_type: string; value_number: number | null; value_date: string | null }>;
+    ).all(resolvedNodeId) as Array<{ key: string; value_text: string; value_type: string; value_number: number | null; value_date: string | null }>;
 
     const fields: FieldEntry[] = fieldRows.map(r => {
       let value: unknown = r.value_text;
@@ -332,29 +335,30 @@ export function createServer(
     }
 
     // Check node exists in DB
-    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
-    if (!nodeRow) {
+    const resolved = resolveById(db, node_id);
+    if (!resolved.found) {
       return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
+    const canonicalId = resolved.node.id;
 
     // Check file exists on disk
-    const absPath = join(vaultPath, node_id);
+    const absPath = join(vaultPath, canonicalId);
     if (!existsSync(absPath)) {
-      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
+      return toolError(`File not found on disk: ${canonicalId}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read existing file
     const raw = readFileSync(absPath, 'utf-8');
 
     // Parse existing file
-    const parsed = parseFile(node_id, raw);
+    const parsed = parseFile(canonicalId, raw);
 
     // Title: use provided value, else existing frontmatter, else filename stem
     const title = newTitle !== undefined
       ? newTitle
       : typeof parsed.frontmatter.title === 'string'
         ? parsed.frontmatter.title
-        : node_id.replace(/\.md$/, '').split('/').pop()!;
+        : canonicalId.replace(/\.md$/, '').split('/').pop()!;
 
     // Types: use provided value, else existing
     const types = newTypes !== undefined ? newTypes : parsed.types;
@@ -436,7 +440,7 @@ export function createServer(
     if (hasSchemas) {
       const mergeResult = mergeSchemaFields(db, types);
       const forValidation = {
-        filePath: node_id,
+        filePath: canonicalId,
         frontmatter: {},
         types,
         fields: Object.entries(mergedFields).map(([key, value]) => ({
@@ -464,21 +468,21 @@ export function createServer(
     });
 
     // Write file (same path — update in place)
-    writeNodeFile(vaultPath, node_id, content, deferredLocks);
+    writeNodeFile(vaultPath, canonicalId, content, deferredLocks);
 
     // Stat for mtime
     const stat = statSync(absPath);
     const mtime = stat.mtime.toISOString();
 
     // Parse + index
-    const reParsed = parseFile(node_id, content);
-    indexFile(db, reParsed, node_id, mtime, content);
+    const reParsed = parseFile(canonicalId, content);
+    indexFile(db, reParsed, canonicalId, mtime, content);
 
     // Return hydrated node + warnings
     const row = db.prepare(`
       SELECT id, file_path, node_type, title, content_text, content_md, updated_at
       FROM nodes WHERE id = ?
-    `).get(node_id) as {
+    `).get(canonicalId) as {
       id: string; file_path: string; node_type: string; title: string | null;
       content_text: string; content_md: string | null; updated_at: string;
     };
@@ -527,19 +531,20 @@ export function createServer(
     const { source_id, target: rawTarget, rel_type } = params;
     const target = rawTarget.startsWith('[[') ? rawTarget : `[[${rawTarget}]]`;
 
-    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
-    if (!nodeRow) {
+    const resolved = resolveById(db, source_id);
+    if (!resolved.found) {
       return toolError(`Node not found: ${source_id}`, 'NOT_FOUND');
     }
+    const canonicalSourceId = resolved.node.id;
 
-    const absPath = join(vaultPath, source_id);
+    const absPath = join(vaultPath, canonicalSourceId);
     if (!existsSync(absPath)) {
-      return toolError(`File not found on disk: ${source_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
+      return toolError(`File not found on disk: ${canonicalSourceId}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read + parse existing file
     const raw = readFileSync(absPath, 'utf-8');
-    const parsed = parseFile(source_id, raw);
+    const parsed = parseFile(canonicalSourceId, raw);
     const types = parsed.types;
 
     // Extract inner target for comparison (strips [[ ]] and alias)
@@ -549,9 +554,9 @@ export function createServer(
     if (rel_type === 'wiki-link') {
       const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
       if (bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
-        return returnCurrentNode(source_id);
+        return returnCurrentNode(canonicalSourceId);
       }
-      return updateNodeInner({ node_id: source_id, append_body: target }, deferredLocks);
+      return updateNodeInner({ node_id: canonicalSourceId, append_body: target }, deferredLocks);
     }
 
     // Check schemas
@@ -573,16 +578,16 @@ export function createServer(
             return inner != null && inner.toLowerCase() === innerTarget.toLowerCase();
           });
           if (alreadyExists) {
-            return returnCurrentNode(source_id);
+            return returnCurrentNode(canonicalSourceId);
           }
           return updateNodeInner({
-            node_id: source_id,
+            node_id: canonicalSourceId,
             fields: { [rel_type]: [...currentArray, target] },
           }, deferredLocks);
         } else {
           // Scalar field
           return updateNodeInner({
-            node_id: source_id,
+            node_id: canonicalSourceId,
             fields: { [rel_type]: target },
           }, deferredLocks);
         }
@@ -599,15 +604,15 @@ export function createServer(
           return inner != null && inner.toLowerCase() === innerTarget.toLowerCase();
         });
         if (alreadyExists) {
-          return returnCurrentNode(source_id);
+          return returnCurrentNode(canonicalSourceId);
         }
         return updateNodeInner({
-          node_id: source_id,
+          node_id: canonicalSourceId,
           fields: { [rel_type]: [...existing, target] },
         }, deferredLocks);
       } else if (rel_type in parsed.frontmatter) {
         return updateNodeInner({
-          node_id: source_id,
+          node_id: canonicalSourceId,
           fields: { [rel_type]: target },
         }, deferredLocks);
       }
@@ -616,9 +621,9 @@ export function createServer(
     // Body fallback
     const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
     if (bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
-      return returnCurrentNode(source_id);
+      return returnCurrentNode(canonicalSourceId);
     }
-    return updateNodeInner({ node_id: source_id, append_body: target }, deferredLocks);
+    return updateNodeInner({ node_id: canonicalSourceId, append_body: target }, deferredLocks);
   }
 
   function addRelationship(params: Parameters<typeof addRelationshipInner>[0]) {
@@ -658,28 +663,29 @@ export function createServer(
       ? (rawTarget.match(/^\[\[([^\]|]+)/)?.[1] ?? rawTarget)
       : rawTarget;
 
-    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(source_id);
-    if (!nodeRow) {
+    const resolved = resolveById(db, source_id);
+    if (!resolved.found) {
       return toolError(`Node not found: ${source_id}`, 'NOT_FOUND');
     }
+    const canonicalSourceId = resolved.node.id;
 
-    const absPath = join(vaultPath, source_id);
+    const absPath = join(vaultPath, canonicalSourceId);
     if (!existsSync(absPath)) {
-      return toolError(`File not found on disk: ${source_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
+      return toolError(`File not found on disk: ${canonicalSourceId}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     const raw = readFileSync(absPath, 'utf-8');
-    const parsed = parseFile(source_id, raw);
+    const parsed = parseFile(canonicalSourceId, raw);
     const types = parsed.types;
 
     // Force body if rel_type is 'wiki-link'
     if (rel_type === 'wiki-link') {
       const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
       if (!bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
-        return returnCurrentNode(source_id);
+        return returnCurrentNode(canonicalSourceId);
       }
       const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
-      return updateNodeInner({ node_id: source_id, body: newBody }, deferredLocks);
+      return updateNodeInner({ node_id: canonicalSourceId, body: newBody }, deferredLocks);
     }
 
     // Check schemas
@@ -694,26 +700,26 @@ export function createServer(
         const isListType = mergedField.type.startsWith('list<');
         if (isListType) {
           const existing = parsed.frontmatter[rel_type];
-          if (!Array.isArray(existing)) return returnCurrentNode(source_id);
+          if (!Array.isArray(existing)) return returnCurrentNode(canonicalSourceId);
           const filtered = existing.filter((item: unknown) => {
             if (typeof item !== 'string') return true;
             const inner = item.match(/^\[\[([^\]|]+)/)?.[1];
             return inner == null || inner.toLowerCase() !== innerTarget.toLowerCase();
           });
-          if (filtered.length === existing.length) return returnCurrentNode(source_id);
+          if (filtered.length === existing.length) return returnCurrentNode(canonicalSourceId);
           return updateNodeInner({
-            node_id: source_id,
+            node_id: canonicalSourceId,
             fields: { [rel_type]: filtered },
           }, deferredLocks);
         } else {
           // Scalar: remove if matches
           const existing = parsed.frontmatter[rel_type];
-          if (typeof existing !== 'string') return returnCurrentNode(source_id);
+          if (typeof existing !== 'string') return returnCurrentNode(canonicalSourceId);
           const inner = existing.match(/^\[\[([^\]|]+)/)?.[1];
           if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
-            return returnCurrentNode(source_id);
+            return returnCurrentNode(canonicalSourceId);
           }
-          return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } }, deferredLocks);
+          return updateNodeInner({ node_id: canonicalSourceId, fields: { [rel_type]: null } }, deferredLocks);
         }
       }
     }
@@ -727,27 +733,27 @@ export function createServer(
           const inner = item.match(/^\[\[([^\]|]+)/)?.[1];
           return inner == null || inner.toLowerCase() !== innerTarget.toLowerCase();
         });
-        if (filtered.length === existing.length) return returnCurrentNode(source_id);
+        if (filtered.length === existing.length) return returnCurrentNode(canonicalSourceId);
         return updateNodeInner({
-          node_id: source_id,
+          node_id: canonicalSourceId,
           fields: { [rel_type]: filtered },
         }, deferredLocks);
       } else if (typeof existing === 'string' && rel_type in parsed.frontmatter) {
         const inner = existing.match(/^\[\[([^\]|]+)/)?.[1];
         if (inner == null || inner.toLowerCase() !== innerTarget.toLowerCase()) {
-          return returnCurrentNode(source_id);
+          return returnCurrentNode(canonicalSourceId);
         }
-        return updateNodeInner({ node_id: source_id, fields: { [rel_type]: null } }, deferredLocks);
+        return updateNodeInner({ node_id: canonicalSourceId, fields: { [rel_type]: null } }, deferredLocks);
       }
     }
 
     // Body fallback: remove from body
     const bodyLinks = parsed.wikiLinks.filter(l => l.source === 'body');
     if (!bodyLinks.some(l => l.target.toLowerCase() === innerTarget.toLowerCase())) {
-      return returnCurrentNode(source_id);
+      return returnCurrentNode(canonicalSourceId);
     }
     const newBody = removeBodyWikiLink(parsed.contentMd, innerTarget);
-    return updateNodeInner({ node_id: source_id, body: newBody }, deferredLocks);
+    return updateNodeInner({ node_id: canonicalSourceId, body: newBody }, deferredLocks);
   }
 
   function removeRelationship(params: Parameters<typeof removeRelationshipInner>[0]) {
@@ -778,21 +784,22 @@ export function createServer(
   function deleteNodeInner(params: { node_id: string }, deferredLocks?: Set<string>) {
     const { node_id } = params;
 
-    const nodeRow = db.prepare('SELECT id FROM nodes WHERE id = ?').get(node_id);
-    if (!nodeRow) {
+    const resolved = resolveById(db, node_id);
+    if (!resolved.found) {
       return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
+    const canonicalId = resolved.node.id;
 
-    const absPath = join(vaultPath, node_id);
+    const absPath = join(vaultPath, canonicalId);
     if (!existsSync(absPath)) {
-      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
+      return toolError(`File not found on disk: ${canonicalId}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
-    deleteNodeFile(vaultPath, node_id, deferredLocks);
-    deleteFile(db, node_id);
+    deleteNodeFile(vaultPath, canonicalId, deferredLocks);
+    deleteFile(db, canonicalId);
 
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify({ node_id, deleted: true }) }],
+      content: [{ type: 'text' as const, text: JSON.stringify({ node_id: canonicalId, deleted: true }) }],
     };
   }
 
@@ -952,30 +959,30 @@ export function createServer(
     const { node_id, new_title, new_path: explicitNewPath } = params;
 
     // Check node exists in DB
-    const nodeRow = db.prepare('SELECT id, title FROM nodes WHERE id = ?').get(node_id) as
-      | { id: string; title: string }
-      | undefined;
-    if (!nodeRow) {
+    const resolved = resolveById(db, node_id);
+    if (!resolved.found) {
       return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
     }
+    const canonicalId = resolved.node.id;
+    const nodeRow = { id: canonicalId, title: resolved.node.title ?? '' };
 
     // Check file exists on disk
-    const absPath = join(vaultPath, node_id);
+    const absPath = join(vaultPath, canonicalId);
     if (!existsSync(absPath)) {
-      return toolError(`File not found on disk: ${node_id}. Database and filesystem are out of sync.`, 'NOT_FOUND');
+      return toolError(`File not found on disk: ${canonicalId}. Database and filesystem are out of sync.`, 'NOT_FOUND');
     }
 
     // Read + parse existing file
     const raw = readFileSync(absPath, 'utf-8');
-    const parsed = parseFile(node_id, raw);
+    const parsed = parseFile(canonicalId, raw);
     const oldTitle = typeof parsed.frontmatter.title === 'string'
       ? parsed.frontmatter.title
-      : node_id.replace(/\.md$/, '').split('/').pop()!;
+      : canonicalId.replace(/\.md$/, '').split('/').pop()!;
     const types = parsed.types;
 
     // No-op: same title, no explicit new path
     if (new_title === oldTitle && !explicitNewPath) {
-      return returnCurrentNode(node_id);
+      return returnCurrentNode(canonicalId);
     }
 
     // Extract existing fields (exclude meta-keys)
@@ -991,12 +998,12 @@ export function createServer(
       newPath = explicitNewPath;
     } else {
       const generated = generateFilePath(new_title, types, existingFields, db);
-      const originalDir = node_id.includes('/') ? node_id.slice(0, node_id.lastIndexOf('/')) : '';
+      const originalDir = canonicalId.includes('/') ? canonicalId.slice(0, canonicalId.lastIndexOf('/')) : '';
       newPath = originalDir ? `${originalDir}/${generated}` : generated;
     }
 
     // Check new path doesn't collide (unless same path)
-    if (newPath !== node_id && existsSync(join(vaultPath, newPath))) {
+    if (newPath !== canonicalId && existsSync(join(vaultPath, newPath))) {
       return toolError(
         `File already exists at ${newPath}. Use a different title or provide an explicit new_path.`,
         'CONFLICT',
@@ -1008,7 +1015,7 @@ export function createServer(
       SELECT DISTINCT source_id FROM relationships
       WHERE (resolved_target_id = ? OR LOWER(target_id) = LOWER(?))
         AND source_id != ?
-    `).all(node_id, oldTitle, node_id) as Array<{ source_id: string }>;
+    `).all(canonicalId, oldTitle, canonicalId) as Array<{ source_id: string }>;
 
     // Update source file: self-references first (while content has old title), then serialize with new title
     const updatedSourceFields = updateFrontmatterReferences(existingFields, oldTitle, new_title);
@@ -1025,8 +1032,8 @@ export function createServer(
 
     // Write new file, delete old
     writeNodeFile(vaultPath, newPath, sourceContent);
-    if (newPath !== node_id) {
-      deleteNodeFile(vaultPath, node_id);
+    if (newPath !== canonicalId) {
+      deleteNodeFile(vaultPath, canonicalId);
     }
 
     // Update referencing files
@@ -1068,8 +1075,8 @@ export function createServer(
 
     // Re-index everything in one transaction
     db.transaction(() => {
-      if (newPath !== node_id) {
-        deleteFile(db, node_id);
+      if (newPath !== canonicalId) {
+        deleteFile(db, canonicalId);
       }
 
       const newStat = statSync(join(vaultPath, newPath));
@@ -1101,7 +1108,7 @@ export function createServer(
         type: 'text' as const,
         text: JSON.stringify({
           node,
-          old_path: node_id,
+          old_path: canonicalId,
           new_path: newPath,
           references_updated: updatedRefs.length,
         }),
@@ -2151,12 +2158,11 @@ export function createServer(
       }
 
       // Check node exists in DB
-      const nodeRow = db.prepare('SELECT id, file_path FROM nodes WHERE id = ?').get(node_id) as
-        | { id: string; file_path: string }
-        | undefined;
-      if (!nodeRow) {
+      const resolved = resolveById(db, node_id);
+      if (!resolved.found) {
         return toolError(`Node not found: ${node_id}`, 'NOT_FOUND');
       }
+      const nodeRow = resolved.node;
 
       // Read raw markdown from disk
       const absPath = join(vaultPath, nodeRow.file_path);
