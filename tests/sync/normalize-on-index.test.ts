@@ -8,6 +8,7 @@ import { loadSchemas } from '../../src/schema/loader.js';
 import { parseFile } from '../../src/parser/index.js';
 import { normalizeOnIndex } from '../../src/sync/normalize-on-index.js';
 import { incrementalIndex } from '../../src/sync/indexer.js';
+import { watchVault } from '../../src/sync/watcher.js';
 import type { EnforcementConfig } from '../../src/enforcement/types.js';
 import type { GlobalFieldDefinition } from '../../src/coercion/types.js';
 
@@ -455,5 +456,103 @@ describe('incrementalIndex with normalize-on-index', () => {
     expect(disk2).toContain('priority:');
     expect(disk2).not.toContain('Priority:');
     expect(disk2).toContain('high');
+  });
+});
+
+function waitFor(fn: () => boolean, timeout = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const check = () => {
+      if (fn()) return resolve();
+      if (Date.now() - start > timeout) return reject(new Error('waitFor timeout'));
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+describe('watcher with normalize-on-index', () => {
+  let db: Database.Database;
+  let tmpVault: string;
+  let handle: { close(): Promise<void>; ready: Promise<void> } | undefined;
+
+  beforeEach(() => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-noi-watch-'));
+    mkdirSync(join(tmpVault, '.schemas'), { recursive: true });
+    writeFileSync(join(tmpVault, '.schemas', 'task.yaml'), TASK_SCHEMA_YAML, 'utf-8');
+    mkdirSync(join(tmpVault, 'tasks'), { recursive: true });
+
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    loadSchemas(db, tmpVault);
+  });
+
+  afterEach(async () => {
+    if (handle) await handle.close();
+    db.close();
+    rmSync(tmpVault, { recursive: true, force: true });
+  });
+
+  it('normalizes a file on live change', async () => {
+    handle = watchVault(db, tmpVault, {
+      debounceMs: 100,
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+    await handle.ready;
+
+    // Write a file with non-canonical frontmatter
+    writeFileSync(
+      join(tmpVault, 'tasks', 'live.md'),
+      '---\ntitle: Live\ntypes: [task]\nStatus: Todo\n---\nBody.\n',
+      'utf-8',
+    );
+
+    // Wait for the node to appear in the DB
+    await waitFor(() => {
+      const row = db.prepare("SELECT id FROM nodes WHERE id = 'tasks/live.md'").get();
+      return row != null;
+    });
+
+    // File on disk should be normalized
+    const diskContent = readFileSync(join(tmpVault, 'tasks', 'live.md'), 'utf-8');
+    expect(diskContent).toContain('status:');
+    expect(diskContent).not.toContain('Status:');
+    expect(diskContent).toContain('todo');
+
+    // DB should have the corrected value
+    const row = db.prepare(
+      "SELECT value_text FROM fields WHERE node_id = 'tasks/live.md' AND key = 'status'",
+    ).get() as { value_text: string } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.value_text).toBe('todo');
+  });
+
+  it('does not normalize when skipNormalize is true', async () => {
+    handle = watchVault(db, tmpVault, {
+      debounceMs: 100,
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+      skipNormalize: true,
+    });
+    await handle.ready;
+
+    // Write a file with non-canonical frontmatter
+    writeFileSync(
+      join(tmpVault, 'tasks', 'skip-watch.md'),
+      '---\ntitle: SkipWatch\ntypes: [task]\nStatus: Todo\n---\nBody.\n',
+      'utf-8',
+    );
+
+    // Wait for indexing
+    await waitFor(() => {
+      const row = db.prepare("SELECT id FROM nodes WHERE id = 'tasks/skip-watch.md'").get();
+      return row != null;
+    });
+
+    // File on disk should be unchanged (not normalized)
+    const diskContent = readFileSync(join(tmpVault, 'tasks', 'skip-watch.md'), 'utf-8');
+    expect(diskContent).toContain('Status: Todo');
   });
 });
