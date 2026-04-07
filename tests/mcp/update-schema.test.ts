@@ -118,4 +118,55 @@ describe('updateSchema', () => {
       ]),
     ).toThrow("Field 'nope' does not exist in schema 'task'");
   });
+
+  it('updates an existing field definition (merge semantics)', () => {
+    const result = updateSchema(db, tmpDir, 'task', [
+      { action: 'update_field', field: 'status', definition: { values: ['todo', 'in-progress', 'done', 'archived'] } },
+    ]);
+
+    expect(result.operations_applied).toBe(1);
+    const schema = getSchema(db, 'task');
+    // Updated keys merged
+    expect(schema!.fields.status.values).toEqual(['todo', 'in-progress', 'done', 'archived']);
+    // Existing keys preserved
+    expect(schema!.fields.status.type).toBe('enum');
+    expect(schema!.fields.status.required).toBe(true);
+  });
+
+  it('errors when updating a field that does not exist', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'update_field', field: 'nope', definition: { type: 'string' } },
+      ]),
+    ).toThrow("Field 'nope' does not exist in schema 'task'");
+  });
+
+  it('sets schema metadata', () => {
+    const result = updateSchema(db, tmpDir, 'task', [
+      { action: 'set_metadata', key: 'display_name', value: 'Work Task' },
+      { action: 'set_metadata', key: 'icon', value: 'briefcase' },
+    ]);
+
+    expect(result.operations_applied).toBe(2);
+    const schema = getSchema(db, 'task');
+    expect(schema!.display_name).toBe('Work Task');
+    expect(schema!.icon).toBe('briefcase');
+  });
+
+  it('sets serialization metadata', () => {
+    updateSchema(db, tmpDir, 'task', [
+      { action: 'set_metadata', key: 'serialization', value: { filename_template: 'tasks/work/{{title}}.md' } },
+    ]);
+
+    const schema = getSchema(db, 'task');
+    expect(schema!.serialization).toEqual({ filename_template: 'tasks/work/{{title}}.md' });
+  });
+
+  it('errors on unsupported metadata key', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'set_metadata', key: 'bogus', value: 'whatever' },
+      ]),
+    ).toThrow("Unsupported metadata key 'bogus'");
+  });
 });

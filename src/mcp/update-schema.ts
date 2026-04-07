@@ -148,6 +148,26 @@ function applyOperation(
       schema.fields = newFields;
       break;
     }
+    case 'update_field': {
+      if (!op.field) throw new Error("update_field requires 'field'");
+      if (!op.definition) throw new Error("update_field requires 'definition'");
+      if (!schema.fields[op.field]) {
+        throw new Error(`Field '${op.field}' does not exist in schema '${schemaName}'`);
+      }
+      schema.fields[op.field] = { ...schema.fields[op.field], ...op.definition } as FieldDefinition;
+      break;
+    }
+    case 'set_metadata': {
+      if (!op.key) throw new Error("set_metadata requires 'key'");
+      const ALLOWED_KEYS = new Set(['display_name', 'icon', 'extends', 'serialization']);
+      if (!ALLOWED_KEYS.has(op.key)) {
+        throw new Error(
+          `Unsupported metadata key '${op.key}'. Allowed keys: ${[...ALLOWED_KEYS].join(', ')}`,
+        );
+      }
+      (schema as unknown as Record<string, unknown>)[op.key] = op.value;
+      break;
+    }
     default:
       throw new Error(`Unknown action: ${op.action}`);
   }
