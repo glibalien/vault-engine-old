@@ -41,14 +41,20 @@ npm run build
 ### Run
 
 ```bash
-# Point at your markdown vault
+# Point at your markdown vault (stdio transport, default)
 node dist/index.js /path/to/vault/.vault-engine/vault.db /path/to/vault
 
 # Or use defaults (creates .vault-engine/vault.db in cwd)
 node dist/index.js
+
+# HTTP transport (requires OAUTH_OWNER_PASSWORD and OAUTH_ISSUER_URL in .env)
+node dist/index.js --transport http --port 3333
+
+# Both stdio and HTTP simultaneously
+node dist/index.js --transport both --port 3333
 ```
 
-The server indexes the vault on startup (incremental — fast on subsequent runs) and connects via MCP stdio transport.
+The server indexes the vault on startup (incremental — fast on subsequent runs) and watches for file changes.
 
 ### Test with MCP Inspector
 
@@ -69,22 +75,30 @@ npx @modelcontextprotocol/inspector node dist/index.js /path/to/vault/.vault-eng
 | Tool | Description |
 |------|-------------|
 | `list-types` | List all node types with counts |
-| `get-node` | Get full node details by ID, with optional relationships and computed fields |
-| `get-recent` | Get recently updated nodes, with optional type and date filters |
-| `query-nodes` | Structured search with type, full-text, field filters (8 operators), ordering |
-| `list-schemas` | List schema definitions with summaries |
-| `describe-schema` | Get full resolved schema with inherited fields |
-| `validate-node` | Validate a node or hypothetical node against schemas |
-| `search` | Full-text search via FTS5 |
+| `get-node` | Get full node details by ID or title, with optional relationships and computed fields |
+| `query-nodes` | Structured search with type, full-text (FTS5), field filters (8 operators), reference filtering, path prefix, since date, ordering |
 | `semantic-search` | Vector similarity search (requires embedding config) |
 | `traverse-graph` | N-hop BFS graph traversal with direction/type/depth controls |
+| `find-duplicates` | Detect nodes with similar/identical titles via Levenshtein distance |
+
+### Schema Tools
+
+| Tool | Description |
+|------|-------------|
+| `list-schemas` | List schema definitions with summaries |
+| `describe-schema` | Get full resolved schema with inherited fields and enforcement policies |
+| `validate-node` | Validate a node or hypothetical node against schemas |
+| `infer-schemas` | Analyze vault data to infer schema definitions (report, merge, or overwrite modes) |
+| `update-schema` | Surgically modify schema definitions: add/remove/rename/update fields, set metadata |
+| `normalize-fields` | Normalize frontmatter field names and values across the vault to match schemas |
 
 ### Mutation Tools
 
 | Tool | Description |
 |------|-------------|
 | `create-node` | Create a new markdown file with frontmatter and optional relationships |
-| `update-node` | Update fields and/or body of an existing node |
+| `update-node` | Update fields/body/title/types of a node, or bulk-update via query |
+| `delete-node` | Delete a node and clean up references |
 | `add-relationship` | Add a wiki-link reference between nodes |
 | `remove-relationship` | Remove a wiki-link reference between nodes |
 | `rename-node` | Rename a node and update all incoming references across the vault |
@@ -99,20 +113,33 @@ npx @modelcontextprotocol/inspector node dist/index.js /path/to/vault/.vault-eng
 | `create-meeting-notes` | Create meeting node and auto-resolve/create attendee nodes |
 | `extract-tasks` | Create task nodes from a source node with back-references |
 
+### Content Tools
+
+| Tool | Description |
+|------|-------------|
+| `read-embedded` | Read `![[embed]]` attachments: images as base64, audio transcribed via Whisper, documents as text |
+| `summarize-node` | Assemble a node and all its embedded content for summarization |
+
 ## Project Structure
 
 ```
 src/
-├── index.ts           # Entry point: DB, indexing, MCP server over stdio
+├── index.ts           # Entry point: DB, indexing, MCP server, transport selection
 ├── parser/            # Markdown → ParsedFile pipeline (remark + wiki-link plugin + frontmatter)
 ├── db/                # SQLite connection + schema DDL
-├── sync/              # File-to-DB indexing (rebuild, incremental, file watcher)
+├── sync/              # File-to-DB indexing (rebuild, incremental, file watcher, reference resolution)
 ├── search/            # FTS5 full-text search
-├── schema/            # YAML schema loader, multi-type field merging, validation
-├── serializer/        # ParsedFile → markdown string, file path generation
+├── schema/            # YAML schema loader, inheritance, field merging, validation, computed fields
+├── serializer/        # Structured data → markdown string, file path generation, frontmatter patching
+├── coercion/          # Write-path input coercion (type coercion, alias resolution, global fields)
+├── enforcement/       # Per-type enforcement policies (normalize-on-index, unknown fields, enum validation)
 ├── graph/             # BFS graph traversal
 ├── embeddings/        # Vector embeddings (chunker, providers, sqlite-vec, background worker)
-├── mcp/               # MCP server + tool handlers
+├── inference/         # Schema inference from vault data (analyzer, generator)
+├── attachments/       # Embed resolution and content extraction (images, audio, documents)
+├── mcp/               # MCP server + 25 tool handlers
+├── transport/         # CLI arg parsing, HTTP transport (Express + OAuth 2.1)
+├── auth/              # OAuth 2.1 provider for HTTP transport
 └── utils/             # Shared utilities
 ```
 
@@ -124,16 +151,17 @@ Schema definitions live in `.schemas/*.yaml` in the vault root. They support inh
 # .schemas/task.yaml
 name: task
 display_name: Task
-icon: checkbox
+icon: check
 fields:
   status:
-    type: string
+    type: enum
+    values: [todo, in-progress, done]
     required: true
-    enum: [todo, in-progress, done]
   due_date:
     type: date
   assignee:
     type: reference
+    target_schema: person
 serialization:
   filename_template: "tasks/{{title}}.md"
 ```
