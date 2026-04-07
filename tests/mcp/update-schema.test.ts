@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Database from 'better-sqlite3';
@@ -168,5 +168,106 @@ describe('updateSchema', () => {
         { action: 'set_metadata', key: 'bogus', value: 'whatever' },
       ]),
     ).toThrow("Unsupported metadata key 'bogus'");
+  });
+
+  it('creates a new schema from scratch', () => {
+    const result = updateSchema(db, tmpDir, 'project', [
+      { action: 'set_metadata', key: 'display_name', value: 'Project' },
+      { action: 'set_metadata', key: 'icon', value: 'folder' },
+      { action: 'add_field', field: 'status', definition: { type: 'enum', values: ['active', 'completed', 'archived'] } },
+      { action: 'add_field', field: 'lead', definition: { type: 'reference', target_schema: 'person' } },
+    ]);
+
+    expect(result.operations_applied).toBe(4);
+    expect(result.file_path).toBe('.schemas/project.yaml');
+
+    const schema = getSchema(db, 'project');
+    expect(schema).not.toBeNull();
+    expect(schema!.display_name).toBe('Project');
+    expect(schema!.icon).toBe('folder');
+    expect(schema!.fields.status.type).toBe('enum');
+    expect(schema!.fields.lead.type).toBe('reference');
+  });
+
+  it('validates extends target exists on disk', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'subtask', [
+        { action: 'set_metadata', key: 'extends', value: 'nonexistent' },
+        { action: 'add_field', field: 'parent', definition: { type: 'reference' } },
+      ]),
+    ).toThrow(
+      "Cannot set extends to 'nonexistent': no schema file found at .schemas/nonexistent.yaml. " +
+      'Create the parent schema first, then extend from it.',
+    );
+
+    // Schema file should NOT have been created
+    expect(getSchema(db, 'subtask')).toBeNull();
+  });
+
+  it('validates field types', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'add_field', field: 'bad', definition: { type: 'invalid' as any } },
+      ]),
+    ).toThrow("Invalid field type 'invalid' for field 'bad'");
+  });
+
+  it('validates enum fields have values', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'add_field', field: 'category', definition: { type: 'enum' } },
+      ]),
+    ).toThrow("Enum field 'category' requires a non-empty 'values' array");
+  });
+
+  it('rolls back on reload failure', () => {
+    // Create a child schema that extends task
+    writeFileSync(
+      join(tmpDir, '.schemas', 'work-task.yaml'),
+      [
+        'name: work-task',
+        'extends: task',
+        'fields:',
+        '  department:',
+        '    type: string',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    loadSchemas(db, tmpDir);
+
+    // Read original task.yaml content for comparison
+    const originalContent = readFileSync(join(tmpDir, '.schemas', 'task.yaml'), 'utf-8');
+
+    // Set extends to create a cycle: task extends work-task, but work-task extends task
+    // This will pass per-file validation (work-task.yaml exists) but fail on loadSchemas
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'set_metadata', key: 'extends', value: 'work-task' },
+      ]),
+    ).toThrow(/Schema reload failed/);
+
+    // File should be rolled back
+    const afterContent = readFileSync(join(tmpDir, '.schemas', 'task.yaml'), 'utf-8');
+    expect(afterContent).toBe(originalContent);
+
+    // DB should still have the original schemas
+    const schema = getSchema(db, 'task');
+    expect(schema).not.toBeNull();
+    expect(schema!.extends).toBeUndefined();
+  });
+
+  it('applies multiple operations atomically', () => {
+    // Second operation should fail, so first should not be applied either
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'add_field', field: 'due_date', definition: { type: 'date' } },
+        { action: 'add_field', field: 'bad', definition: { type: 'invalid' as any } },
+      ]),
+    ).toThrow("Invalid field type 'invalid'");
+
+    // due_date should NOT have been added (atomicity)
+    const schema = getSchema(db, 'task');
+    expect(schema!.fields.due_date).toBeUndefined();
   });
 });
