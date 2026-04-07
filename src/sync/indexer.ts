@@ -76,9 +76,9 @@ export function indexFile(
 
   // Upsert node (includes is_valid to avoid extra UPDATE triggering FTS5 sync)
   db.prepare(`
-    INSERT OR REPLACE INTO nodes (id, file_path, node_type, content_text, content_md, title, depth, is_valid)
-    VALUES (?, ?, 'file', ?, ?, ?, 0, ?)
-  `).run(relativePath, relativePath, parsed.contentText, parsed.contentMd, deriveTitle(parsed, relativePath), isValid);
+    INSERT OR REPLACE INTO nodes (id, file_path, node_type, content_text, content_md, title, depth, is_valid, file_mtime, indexed_at)
+    VALUES (?, ?, 'file', ?, ?, ?, 0, ?, ?, datetime('now'))
+  `).run(relativePath, relativePath, parsed.contentText, parsed.contentMd, deriveTitle(parsed, relativePath), isValid, mtime);
 
   // Insert node_types
   const insertType = db.prepare('INSERT INTO node_types (node_id, schema_type) VALUES (?, ?)');

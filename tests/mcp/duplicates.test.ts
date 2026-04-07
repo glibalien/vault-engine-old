@@ -15,7 +15,7 @@ function seedNode(
   fields?: Record<string, string>,
 ) {
   db.prepare(
-    `INSERT INTO nodes (id, file_path, node_type, title, content_text, updated_at)
+    `INSERT INTO nodes (id, file_path, node_type, title, content_text, indexed_at)
      VALUES (?, ?, 'file', ?, '', datetime('now'))`,
   ).run(id, id, title);
   for (const t of types) {
@@ -137,7 +137,7 @@ describe('findDuplicates', () => {
   it('handles nodes with null titles', () => {
     // Insert a node with null title directly
     db.prepare(
-      `INSERT INTO nodes (id, file_path, node_type, title, content_text, updated_at)
+      `INSERT INTO nodes (id, file_path, node_type, title, content_text, indexed_at)
        VALUES (?, ?, 'file', NULL, '', datetime('now'))`,
     ).run('null-title.md', 'null-title.md');
     seedNode(db, 'a.md', 'Alpha', ['note']);

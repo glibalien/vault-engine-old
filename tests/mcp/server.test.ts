@@ -87,7 +87,7 @@ describe('MCP server', () => {
       expect(data.title).toBe('Review vendor proposals');
       expect(data.content_text).toContain('vendor');
       expect(data.content_md).toContain('vendor');
-      expect(data.updated_at).toBeDefined();
+      expect(data.indexed_at).toBeDefined();
     });
 
     it('returns error for nonexistent node', async () => {
@@ -367,18 +367,18 @@ describe('MCP server', () => {
       expect(data).toHaveLength(1);
     });
 
-    it('supports order_by on updated_at', async () => {
+    it('supports order_by on indexed_at', async () => {
       indexFixture(db, 'sample-task.md', 'tasks/review.md');
       indexFixture(db, 'sample-meeting.md', 'meetings/q1.md');
 
       const result = await client.callTool({
         name: 'query-nodes',
-        arguments: { schema_type: 'task', order_by: 'updated_at ASC' },
+        arguments: { schema_type: 'task', order_by: 'indexed_at ASC' },
       });
 
       const data = JSON.parse((result.content as Array<{ text: string }>)[0].text);
       expect(data).toHaveLength(2);
-      // Just verify both returned — ordering by updated_at with same insert time is deterministic by rowid
+      // Just verify both returned — ordering by indexed_at with same insert time is deterministic by rowid
     });
 
     it('handles FTS5 syntax errors gracefully', async () => {

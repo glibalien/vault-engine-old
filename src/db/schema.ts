@@ -15,7 +15,8 @@ export function createSchema(db: Database.Database): void {
       title           TEXT,
       is_valid        INTEGER,
       created_at      TEXT DEFAULT (datetime('now')),
-      updated_at      TEXT DEFAULT (datetime('now')),
+      file_mtime      TEXT,
+      indexed_at      TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (parent_id) REFERENCES nodes(id)
     );
 

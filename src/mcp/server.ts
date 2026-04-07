@@ -73,7 +73,7 @@ export function createServer(
 
   // Shared helper: hydrate node rows with types and fields
   function hydrateNodes(
-    nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }>,
+    nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string }>,
     opts?: { includeContentMd?: boolean },
   ) {
     if (nodeRows.length === 0) return [];
@@ -112,7 +112,7 @@ export function createServer(
         types: typesMap.get(row.id) ?? [],
         fields: fieldsMap.get(row.id) ?? {},
         content_text: row.content_text,
-        updated_at: row.updated_at,
+        indexed_at: row.indexed_at,
       };
       if (opts?.includeContentMd) {
         node.content_md = row.content_md;
@@ -290,11 +290,11 @@ export function createServer(
 
     // Step 10: Return hydrated node + warnings
     const row = db.prepare(`
-      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
       FROM nodes WHERE id = ?
     `).get(relativePath) as {
       id: string; file_path: string; node_type: string; title: string | null;
-      content_text: string; content_md: string | null; updated_at: string;
+      content_text: string; content_md: string | null; indexed_at: string;
     };
 
     const [node] = hydrateNodes([row]);
@@ -480,11 +480,11 @@ export function createServer(
 
     // Return hydrated node + warnings
     const row = db.prepare(`
-      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
       FROM nodes WHERE id = ?
     `).get(canonicalId) as {
       id: string; file_path: string; node_type: string; title: string | null;
-      content_text: string; content_md: string | null; updated_at: string;
+      content_text: string; content_md: string | null; indexed_at: string;
     };
 
     const [node] = hydrateNodes([row]);
@@ -508,11 +508,11 @@ export function createServer(
 
   function returnCurrentNode(nodeId: string) {
     const row = db.prepare(`
-      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
       FROM nodes WHERE id = ?
     `).get(nodeId) as {
       id: string; file_path: string; node_type: string; title: string | null;
-      content_text: string; content_md: string | null; updated_at: string;
+      content_text: string; content_md: string | null; indexed_at: string;
     } | undefined;
     if (!row) {
       return toolError(`Node not found: ${nodeId}`, 'NOT_FOUND');
@@ -1094,11 +1094,11 @@ export function createServer(
 
     // Return hydrated node
     const row = db.prepare(`
-      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
       FROM nodes WHERE id = ?
     `).get(newPath) as {
       id: string; file_path: string; node_type: string; title: string | null;
-      content_text: string; content_md: string | null; updated_at: string;
+      content_text: string; content_md: string | null; indexed_at: string;
     };
 
     const [node] = hydrateNodes([row]);
@@ -1191,9 +1191,9 @@ export function createServer(
       }
       const resolvedId = resolved.node.id;
       const row = db.prepare(`
-        SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+        SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
         FROM nodes WHERE id = ?
-      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
+      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string } | undefined;
 
       if (!row) {
         return toolError(`Node not found: ${resolvedId}`, 'NOT_FOUND');
@@ -1250,7 +1250,7 @@ export function createServer(
       limit: z.number().int().min(1).optional().default(20)
         .describe('Maximum number of results (default 20)'),
       order_by: z.string().min(1).optional()
-        .describe('Sort field + direction, e.g. "updated_at DESC", "due_date ASC". Default: updated_at DESC (or FTS rank when full_text is used)'),
+        .describe('Sort field + direction, e.g. "indexed_at DESC", "due_date ASC". Default: indexed_at DESC (or FTS rank when full_text is used)'),
       references: z.object({
         target: z.string().min(1).describe('Node title or ID to find relationships for'),
         rel_type: z.string().min(1).optional().describe('Filter by relationship type (field name or "wiki-link")'),
@@ -1259,13 +1259,15 @@ export function createServer(
       }).optional()
         .describe('Filter by relationship — find nodes connected to a target node'),
       since: z.string().min(1).optional()
-        .describe('ISO date — only return nodes updated after this time, e.g. "2026-03-27T00:00:00Z"'),
+        .describe('ISO date — only return nodes the engine indexed after this time. Use this to find what\'s new since your last check, e.g. "2026-03-27T00:00:00Z"'),
+      modified_since: z.string().min(1).optional()
+        .describe('ISO date — only return nodes whose underlying file was modified after this time, e.g. "2026-03-27T00:00:00Z". Unlike since (which tracks when the engine indexed the node), this tracks when the file was last touched on disk.'),
       path_prefix: z.string().min(1).optional()
         .describe('Filter by folder path prefix, e.g. "Meetings/" or "projects/acme/"'),
     },
-    async ({ schema_type, full_text, filters, limit, order_by, references, since, path_prefix }) => {
-      if (!schema_type && !full_text && (!filters || filters.length === 0) && !references && !since && !path_prefix) {
-        return toolError('At least one of schema_type, full_text, filters, references, since, or path_prefix is required', 'VALIDATION_ERROR');
+    async ({ schema_type, full_text, filters, limit, order_by, references, since, modified_since, path_prefix }) => {
+      if (!schema_type && !full_text && (!filters || filters.length === 0) && !references && !since && !modified_since && !path_prefix) {
+        return toolError('At least one of schema_type, full_text, filters, references, since, modified_since, or path_prefix is required', 'VALIDATION_ERROR');
       }
 
       try {
@@ -1287,6 +1289,7 @@ export function createServer(
           order_by,
           limit,
           since,
+          modified_since,
           path_prefix,
           references,
           resolvedTargetId,
@@ -1294,7 +1297,7 @@ export function createServer(
 
         const rows = db.prepare(sql).all(...params) as Array<{
           id: string; file_path: string; node_type: string; title: string | null;
-          content_text: string; content_md: string | null; updated_at: string;
+          content_text: string; content_md: string | null; indexed_at: string;
         }>;
 
         const nodes = hydrateNodes(rows);
@@ -1815,20 +1818,20 @@ export function createServer(
 
         // Hydrate root
         const rootRow = db.prepare(
-          'SELECT id, file_path, node_type, title, content_text, content_md, updated_at FROM nodes WHERE id = ?'
-        ).get(result.root_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string };
+          'SELECT id, file_path, node_type, title, content_text, content_md, indexed_at FROM nodes WHERE id = ?'
+        ).get(result.root_id) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string };
         const [hydratedRoot] = hydrateNodes([rootRow]);
 
         // Hydrate discovered nodes
         let hydratedNodes: Array<Record<string, unknown>> = [];
         if (result.node_ids.length > 0) {
           const ids = result.node_ids.map(n => n.id);
-          const nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }> = [];
+          const nodeRows: Array<{ id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string }> = [];
           for (let i = 0; i < ids.length; i += 500) {
             const chunk = ids.slice(i, i + 500);
             const placeholders = chunk.map(() => '?').join(',');
             const rows = db.prepare(
-              `SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+              `SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
                FROM nodes WHERE id IN (${placeholders})`
             ).all(...chunk) as typeof nodeRows;
             nodeRows.push(...rows);
@@ -2012,9 +2015,9 @@ export function createServer(
 
       // 2. Load node from DB
       const row = db.prepare(`
-        SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+        SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
         FROM nodes WHERE id = ?
-      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string } | undefined;
+      `).get(resolvedId) as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string } | undefined;
 
       if (!row) {
         return toolError(`Node not found: ${resolvedId}`, 'NOT_FOUND');

@@ -141,12 +141,12 @@ describe('buildQuerySql', () => {
     expect(rows[1].id).toBe('tasks/a.md');
   });
 
-  it('builds SQL with order_by updated_at', () => {
+  it('builds SQL with order_by indexed_at', () => {
     seed('tasks/a.md', '---\ntitle: A\ntypes: [task]\n---\n');
 
     const { sql, params } = buildQuerySql({
       schema_type: 'task',
-      order_by: 'updated_at ASC',
+      order_by: 'indexed_at ASC',
       limit: 20,
     });
     const rows = db.prepare(sql).all(...params) as Array<{ id: string }>;
@@ -191,7 +191,7 @@ describe('buildQuerySql', () => {
 
     const { sql, params } = buildQuerySql({
       full_text: 'keyword',
-      order_by: 'updated_at ASC',
+      order_by: 'indexed_at ASC',
       limit: 20,
     });
     // Should still work — order_by is ignored when full_text is present

@@ -279,7 +279,7 @@ describe('query-nodes comparison operators', () => {
     expect(data).toHaveLength(0);
   });
 
-  it('since: filters by updated_at', async () => {
+  it('since: filters by indexed_at', async () => {
     const result = await callQuery({
       schema_type: 'task',
       since: '2020-01-01T00:00:00.000Z',

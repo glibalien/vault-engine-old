@@ -18,7 +18,7 @@ export interface ProjectTaskStats {
   completion_pct: number;
   tasks_by_status: Record<string, TaskSummary[]>;
   overdue_tasks: TaskSummary[];
-  recent_activity: Array<{ id: string; title: string; updated_at: string }>;
+  recent_activity: Array<{ id: string; title: string; indexed_at: string }>;
 }
 
 /**
@@ -94,19 +94,19 @@ export function computeProjectTaskStats(
     t.status !== 'done' && t.status !== 'cancelled'
   );
 
-  // Recent activity: tasks ordered by updated_at DESC
+  // Recent activity: tasks ordered by indexed_at DESC
   const placeholders = taskIds.map(() => '?').join(', ');
   const recentRows = db.prepare(`
-    SELECT id, title, updated_at FROM nodes
+    SELECT id, title, indexed_at FROM nodes
     WHERE id IN (${placeholders})
-    ORDER BY updated_at DESC
+    ORDER BY indexed_at DESC
     LIMIT 10
-  `).all(...taskIds) as Array<{ id: string; title: string | null; updated_at: string }>;
+  `).all(...taskIds) as Array<{ id: string; title: string | null; indexed_at: string }>;
 
   const recentActivity = recentRows.map(r => ({
     id: r.id,
     title: r.title ?? r.id.replace(/\.md$/, '').split('/').pop()!,
-    updated_at: r.updated_at,
+    indexed_at: r.indexed_at,
   }));
 
   return {
@@ -196,12 +196,12 @@ export function dailySummaryHandler(
 
   // Recently modified: typed nodes only, limit 20
   const recentlyModified = db.prepare(`
-    SELECT DISTINCT n.id, n.title, n.updated_at
+    SELECT DISTINCT n.id, n.title, n.indexed_at
     FROM nodes n
     JOIN node_types nt ON nt.node_id = n.id
-    ORDER BY n.updated_at DESC
+    ORDER BY n.indexed_at DESC
     LIMIT 20
-  `).all() as Array<{ id: string; title: string | null; updated_at: string }>;
+  `).all() as Array<{ id: string; title: string | null; indexed_at: string }>;
 
   // Load types for recently modified
   const recentIds = recentlyModified.map(r => r.id);
@@ -249,7 +249,7 @@ export function dailySummaryHandler(
           id: r.id,
           title: r.title ?? r.id.replace(/\.md$/, '').split('/').pop()!,
           types: recentTypeMap.get(r.id) ?? [],
-          updated_at: r.updated_at,
+          indexed_at: r.indexed_at,
         })),
         active_projects: activeProjectStats,
       }),
@@ -427,7 +427,7 @@ export function projectStatusHandler(
 
   // Verify project exists
   const projectRow = db.prepare(
-    'SELECT id, file_path, node_type, title, content_text, content_md, updated_at FROM nodes WHERE id = ?'
+    'SELECT id, file_path, node_type, title, content_text, content_md, indexed_at FROM nodes WHERE id = ?'
   ).get(project_id);
   if (!projectRow) {
     return {
@@ -436,7 +436,7 @@ export function projectStatusHandler(
     };
   }
 
-  const [project] = hydrateNodes([projectRow as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; updated_at: string }]);
+  const [project] = hydrateNodes([projectRow as { id: string; file_path: string; node_type: string; title: string | null; content_text: string; content_md: string | null; indexed_at: string }]);
   const stats = computeProjectTaskStats(db, project_id);
 
   return {

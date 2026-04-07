@@ -56,12 +56,12 @@ async function main() {
     console.log('\n=== P3: query-nodes with filters ===');
     const queryTimes: number[] = [];
     const queryStmt = db.prepare(`
-      SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
+      SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.indexed_at
       FROM nodes n
       JOIN node_types nt ON nt.node_id = n.id
       JOIN fields f0 ON f0.node_id = n.id
       WHERE nt.schema_type = 'task' AND f0.key = 'status' AND f0.value_text = 'todo'
-      ORDER BY n.updated_at DESC
+      ORDER BY n.indexed_at DESC
       LIMIT 20
     `);
     for (let i = 0; i < WARMUP + ITERATIONS; i++) {
@@ -93,7 +93,7 @@ async function main() {
     // P5: hydrateNodes (100 nodes)
     console.log('\n=== P5: hydrateNodes (100 nodes) ===');
     const nodeRows = db.prepare(`
-      SELECT id, file_path, node_type, title, content_text, content_md, updated_at
+      SELECT id, file_path, node_type, title, content_text, content_md, indexed_at
       FROM nodes LIMIT 100
     `).all();
     const hydrateTimes: number[] = [];
