@@ -15,8 +15,10 @@ export interface QueryOptions {
   filters?: QueryFilter[];
   order_by?: string;
   limit?: number;
-  /** Filter by updated_at > since (ISO datetime string) */
+  /** Filter by indexed_at > since (ISO datetime string) */
   since?: string;
+  /** Filter by file_mtime > modified_since (ISO datetime string) */
+  modified_since?: string;
   /** Filter by node id path prefix (e.g. "tasks/") */
   path_prefix?: string;
   /** Filter by relationship references */
@@ -55,7 +57,7 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
             JOIN nodes n ON n.rowid = fts.rowid`;
     } else {
       selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at, fts.rank
+            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.indexed_at, fts.rank
             FROM nodes_fts fts
             JOIN nodes n ON n.rowid = fts.rowid`;
     }
@@ -69,10 +71,10 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
             FROM nodes n`;
     } else {
       selectFrom = `
-            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.updated_at
+            SELECT n.id, n.file_path, n.node_type, n.title, n.content_text, n.content_md, n.indexed_at
             FROM nodes n`;
     }
-    defaultOrder = 'n.updated_at DESC';
+    defaultOrder = 'n.indexed_at DESC';
   }
 
   // Type filter
@@ -148,10 +150,18 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
     }
   }
 
-  // Since filter
+  // Since filter (indexed_at = when the engine last indexed this node)
+  // Use datetime() to normalize both sides — SQLite stores "YYYY-MM-DD HH:MM:SS"
+  // while callers pass ISO 8601 ("YYYY-MM-DDTHH:MM:SS.sssZ"). datetime() handles both.
   if (opts.since) {
-    conditions.push('n.updated_at > ?');
+    conditions.push('n.indexed_at > datetime(?)');
     conditionParams.push(opts.since);
+  }
+
+  // Modified-since filter (file_mtime = when the file was last modified on disk)
+  if (opts.modified_since) {
+    conditions.push('n.file_mtime > datetime(?)');
+    conditionParams.push(opts.modified_since);
   }
 
   // Path prefix filter
@@ -227,8 +237,8 @@ export function buildQuerySql(opts: QueryOptions): QueryResult {
     const fieldName = parts[0];
     const direction = parts[1]?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    if (fieldName === 'updated_at') {
-      orderClause = `n.updated_at ${direction}`;
+    if (fieldName === 'indexed_at') {
+      orderClause = `n.indexed_at ${direction}`;
     } else {
       // Order by a field value — join fields table
       joins.push('LEFT JOIN fields f_order ON f_order.node_id = n.id AND f_order.key = ?');
