@@ -117,6 +117,37 @@ function applyOperation(
       schema.fields[op.field] = op.definition as FieldDefinition;
       break;
     }
+    case 'remove_field': {
+      if (!op.field) throw new Error("remove_field requires 'field'");
+      if (!schema.fields[op.field]) {
+        throw new Error(`Field '${op.field}' does not exist in schema '${schemaName}'`);
+      }
+      delete schema.fields[op.field];
+      break;
+    }
+    case 'rename_field': {
+      if (!op.field) throw new Error("rename_field requires 'field'");
+      if (!op.new_name) throw new Error("rename_field requires 'new_name'");
+      if (!schema.fields[op.field]) {
+        throw new Error(`Field '${op.field}' does not exist in schema '${schemaName}'`);
+      }
+      if (schema.fields[op.new_name]) {
+        throw new Error(
+          `Cannot rename '${op.field}' to '${op.new_name}': field '${op.new_name}' already exists in schema '${schemaName}'`,
+        );
+      }
+      // Preserve field ordering by rebuilding the fields object
+      const newFields: Record<string, FieldDefinition> = {};
+      for (const [key, def] of Object.entries(schema.fields)) {
+        if (key === op.field) {
+          newFields[op.new_name] = def;
+        } else {
+          newFields[key] = def;
+        }
+      }
+      schema.fields = newFields;
+      break;
+    }
     default:
       throw new Error(`Unknown action: ${op.action}`);
   }

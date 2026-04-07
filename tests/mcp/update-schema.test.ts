@@ -72,4 +72,50 @@ describe('updateSchema', () => {
       ]),
     ).toThrow("Field 'status' already exists in schema 'task'");
   });
+
+  it('removes a field from a schema', () => {
+    const result = updateSchema(db, tmpDir, 'task', [
+      { action: 'remove_field', field: 'assignee' },
+    ]);
+
+    expect(result.operations_applied).toBe(1);
+    const schema = getSchema(db, 'task');
+    expect(schema!.fields.assignee).toBeUndefined();
+    expect(schema!.fields.status).toBeDefined();
+  });
+
+  it('errors when removing a field that does not exist', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'remove_field', field: 'nonexistent' },
+      ]),
+    ).toThrow("Field 'nonexistent' does not exist in schema 'task'");
+  });
+
+  it('renames a field preserving its definition', () => {
+    const result = updateSchema(db, tmpDir, 'task', [
+      { action: 'rename_field', field: 'assignee', new_name: 'owner' },
+    ]);
+
+    expect(result.operations_applied).toBe(1);
+    const schema = getSchema(db, 'task');
+    expect(schema!.fields.assignee).toBeUndefined();
+    expect(schema!.fields.owner).toEqual({ type: 'reference', target_schema: 'person' });
+  });
+
+  it('errors when renaming to a name that already exists', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'rename_field', field: 'assignee', new_name: 'status' },
+      ]),
+    ).toThrow("Cannot rename 'assignee' to 'status': field 'status' already exists in schema 'task'");
+  });
+
+  it('errors when renaming a field that does not exist', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'rename_field', field: 'nope', new_name: 'whatever' },
+      ]),
+    ).toThrow("Field 'nope' does not exist in schema 'task'");
+  });
 });
