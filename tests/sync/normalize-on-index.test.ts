@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { loadSchemas } from '../../src/schema/loader.js';
 import { parseFile } from '../../src/parser/index.js';
 import { normalizeOnIndex } from '../../src/sync/normalize-on-index.js';
+import { incrementalIndex } from '../../src/sync/indexer.js';
 import type { EnforcementConfig } from '../../src/enforcement/types.js';
 import type { GlobalFieldDefinition } from '../../src/coercion/types.js';
 
@@ -277,5 +280,180 @@ describe('normalizeOnIndex', () => {
     );
     expect(second.patched).toBe(false);
     expect(second.warnings).toEqual([]);
+  });
+});
+
+const TASK_SCHEMA_YAML = `
+name: task
+display_name: Task
+icon: check
+fields:
+  status:
+    type: enum
+    values: [todo, in-progress, done]
+    default: todo
+    required: true
+  priority:
+    type: enum
+    values: [high, medium, low]
+    default: medium
+  assignee:
+    type: reference
+    target_schema: person
+serialization:
+  filename_template: "tasks/{{title}}.md"
+  frontmatter_fields: [status, priority, assignee]
+`;
+
+describe('incrementalIndex with normalize-on-index', () => {
+  let db: Database.Database;
+  let tmpVault: string;
+
+  beforeEach(() => {
+    tmpVault = mkdtempSync(join(tmpdir(), 'vault-noi-'));
+    mkdirSync(join(tmpVault, '.schemas'), { recursive: true });
+    writeFileSync(join(tmpVault, '.schemas', 'task.yaml'), TASK_SCHEMA_YAML, 'utf-8');
+    mkdirSync(join(tmpVault, 'tasks'), { recursive: true });
+
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    loadSchemas(db, tmpVault);
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpVault, { recursive: true, force: true });
+  });
+
+  it('fixes files on startup and reports normalized count', () => {
+    writeFileSync(
+      join(tmpVault, 'tasks', 'review.md'),
+      '---\ntitle: Review\ntypes: [task]\nStatus: Todo\n---\nBody text.\n',
+      'utf-8',
+    );
+
+    const result = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+
+    expect(result.normalized).toBe(1);
+    expect(result.indexed).toBe(1);
+
+    // File on disk should be fixed
+    const diskContent = readFileSync(join(tmpVault, 'tasks', 'review.md'), 'utf-8');
+    expect(diskContent).toContain('status:');
+    expect(diskContent).not.toContain('Status:');
+    expect(diskContent).toContain('todo');
+
+    // DB should have the corrected value
+    const row = db.prepare(
+      "SELECT value_text FROM fields WHERE node_id = 'tasks/review.md' AND key = 'status'",
+    ).get() as { value_text: string } | undefined;
+    expect(row).toBeDefined();
+    expect(row!.value_text).toBe('todo');
+  });
+
+  it('server-down scenario: detects and fixes edits made while offline', () => {
+    // 1. Write a clean file and index it
+    writeFileSync(
+      join(tmpVault, 'tasks', 'offline.md'),
+      '---\ntitle: Offline\ntypes: [task]\nstatus: todo\n---\nBody.\n',
+      'utf-8',
+    );
+    const r1 = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+    expect(r1.normalized).toBe(0);
+    expect(r1.indexed).toBe(1);
+
+    // 2. Simulate Obsidian edit while server was down
+    writeFileSync(
+      join(tmpVault, 'tasks', 'offline.md'),
+      '---\ntitle: Offline\ntypes: [task]\nStatus: Todo\n---\nBody.\n',
+      'utf-8',
+    );
+    const r2 = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+    expect(r2.normalized).toBe(1);
+    expect(r2.indexed).toBe(1);
+
+    // 3. Third run — nothing to fix
+    const r3 = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+    expect(r3.normalized).toBe(0);
+  });
+
+  it('kill switch (skipNormalize: true) prevents normalization', () => {
+    writeFileSync(
+      join(tmpVault, 'tasks', 'skip.md'),
+      '---\ntitle: Skip\ntypes: [task]\nStatus: Todo\n---\nBody.\n',
+      'utf-8',
+    );
+
+    const result = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+      skipNormalize: true,
+    });
+
+    expect(result.normalized).toBe(0);
+
+    // File should be unchanged
+    const diskContent = readFileSync(join(tmpVault, 'tasks', 'skip.md'), 'utf-8');
+    expect(diskContent).toContain('Status: Todo');
+  });
+
+  it('backward compat: no options means no normalization', () => {
+    writeFileSync(
+      join(tmpVault, 'tasks', 'compat.md'),
+      '---\ntitle: Compat\ntypes: [task]\nStatus: Todo\n---\nBody.\n',
+      'utf-8',
+    );
+
+    const result = incrementalIndex(db, tmpVault);
+
+    expect(result.normalized).toBe(0);
+
+    // File should be unchanged
+    const diskContent = readFileSync(join(tmpVault, 'tasks', 'compat.md'), 'utf-8');
+    expect(diskContent).toContain('Status: Todo');
+  });
+
+  it('multiple files queued: both fixed on disk after one call', () => {
+    writeFileSync(
+      join(tmpVault, 'tasks', 'one.md'),
+      '---\ntitle: One\ntypes: [task]\nStatus: Todo\n---\nBody 1.\n',
+      'utf-8',
+    );
+    writeFileSync(
+      join(tmpVault, 'tasks', 'two.md'),
+      '---\ntitle: Two\ntypes: [task]\nPriority: HIGH\n---\nBody 2.\n',
+      'utf-8',
+    );
+
+    const result = incrementalIndex(db, tmpVault, {
+      enforcementConfig: makeConfig('fix'),
+      globalFields: {},
+    });
+
+    expect(result.normalized).toBe(2);
+    expect(result.indexed).toBe(2);
+
+    // Both files should be fixed on disk
+    const disk1 = readFileSync(join(tmpVault, 'tasks', 'one.md'), 'utf-8');
+    expect(disk1).toContain('status:');
+    expect(disk1).not.toContain('Status:');
+
+    const disk2 = readFileSync(join(tmpVault, 'tasks', 'two.md'), 'utf-8');
+    expect(disk2).toContain('priority:');
+    expect(disk2).not.toContain('Priority:');
+    expect(disk2).toContain('high');
   });
 });

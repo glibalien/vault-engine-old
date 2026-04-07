@@ -1,13 +1,22 @@
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync, readdirSync } from 'node:fs';
+import { readFileSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import { relative, join, basename } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { ParsedFile } from '../parser/index.js';
+import type { EnforcementConfig } from '../enforcement/types.js';
+import type { GlobalFieldDefinition } from '../coercion/types.js';
 import { parseFile } from '../parser/index.js';
 import { resolveReferences } from './resolver.js';
 import { mergeSchemaFields } from '../schema/merger.js';
 import { validateNode } from '../schema/validator.js';
 import { chunkFile } from '../embeddings/chunker.js';
+import { normalizeOnIndex } from './normalize-on-index.js';
+
+export interface IncrementalIndexOptions {
+  enforcementConfig?: EnforcementConfig;
+  globalFields?: Record<string, GlobalFieldDefinition>;
+  skipNormalize?: boolean;
+}
 
 function globMd(dir: string): string[] {
   const results: string[] = [];
@@ -148,8 +157,10 @@ export function deleteFile(db: Database.Database, relativePath: string): void {
 export function incrementalIndex(
   db: Database.Database,
   vaultPath: string,
-): { indexed: number; skipped: number; deleted: number } {
+  options?: IncrementalIndexOptions,
+): { indexed: number; skipped: number; deleted: number; normalized: number } {
   const mdFiles = globMd(vaultPath);
+  const pendingWrites: Array<{ absPath: string; content: string }> = [];
 
   const run = db.transaction(() => {
     // Load existing file records into a map
@@ -161,6 +172,7 @@ export function incrementalIndex(
 
     let indexed = 0;
     let skipped = 0;
+    let normalized = 0;
 
     for (const absPath of mdFiles) {
       const rel = relative(vaultPath, absPath).replaceAll('\\', '/');
@@ -176,7 +188,7 @@ export function incrementalIndex(
         continue;
       }
 
-      const raw = readFileSync(absPath, 'utf-8');
+      let raw = readFileSync(absPath, 'utf-8');
 
       if (existing) {
         // Mtime differs — check hash
@@ -191,7 +203,29 @@ export function incrementalIndex(
 
       // New file or content changed — parse and index
       try {
-        const parsed = parseFile(rel, raw);
+        let parsed = parseFile(rel, raw);
+
+        // Normalize-on-index
+        if (options?.enforcementConfig && !options?.skipNormalize) {
+          const noiResult = normalizeOnIndex(
+            raw, parsed, absPath, rel,
+            options.enforcementConfig,
+            options.globalFields ?? {},
+            db,
+          );
+          if (noiResult.patched) {
+            pendingWrites.push({ absPath, content: noiResult.raw });
+            normalized++;
+          }
+          if (noiResult.warnings.length > 0) {
+            for (const w of noiResult.warnings) {
+              process.stderr.write(`[vault-engine] normalize-on-index warn: ${rel}: ${w}\n`);
+            }
+          }
+          raw = noiResult.raw;
+          parsed = noiResult.parsed;
+        }
+
         indexFile(db, parsed, rel, mtime, raw);
         indexed++;
       } catch {
@@ -208,10 +242,17 @@ export function incrementalIndex(
 
     resolveReferences(db);
 
-    return { indexed, skipped, deleted };
+    return { indexed, skipped, deleted, normalized };
   });
 
-  return run();
+  const result = run();
+
+  // Flush queued file writes AFTER the transaction commits
+  for (const { absPath, content } of pendingWrites) {
+    writeFileSync(absPath, content, 'utf-8');
+  }
+
+  return result;
 }
 
 export function rebuildIndex(

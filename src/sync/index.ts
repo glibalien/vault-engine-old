@@ -1,4 +1,5 @@
 export { indexFile, rebuildIndex, deleteFile, incrementalIndex } from './indexer.js';
+export type { IncrementalIndexOptions } from './indexer.js';
 export {
   watchVault,
   acquireWriteLock,
