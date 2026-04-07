@@ -6,7 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { openDatabase, createSchema } from './db/index.js';
 import { createServer } from './mcp/server.js';
 import { loadSchemas } from './schema/index.js';
-import { incrementalIndex, watchVault } from './sync/index.js';
+import { incrementalIndex, watchVault, startReconciler } from './sync/index.js';
 import { loadEnforcementConfig } from './enforcement/index.js';
 import { loadGlobalFields } from './coercion/globals.js';
 import { loadVecExtension, createVecTable, getVecDimensions, dropVecTable, createProvider, startEmbeddingWorker } from './embeddings/index.js';
@@ -92,6 +92,9 @@ const watcher = watchVault(db, vaultPath, {
 });
 await watcher.ready;
 console.error('[vault-engine] file watcher started');
+
+const reconciler = startReconciler(db, vaultPath);
+console.error('[vault-engine] reconciler started (first tick in 30s, then every 5m)');
 
 const serverFactory = () => createServer(db, vaultPath, embeddingConfig ? { embeddingConfig } : undefined);
 

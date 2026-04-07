@@ -13,3 +13,5 @@ export type { WatcherOptions } from './watcher.js';
 export { resolveReferences, resolveTarget, buildLookupMaps, resolveTargetWithMaps } from './resolver.js';
 export { normalizeOnIndex } from './normalize-on-index.js';
 export type { NormalizeOnIndexResult } from './normalize-on-index.js';
+export { reconcileOnce, startReconciler } from './reconciler.js';
+export type { ReconcileResult, ReconcilerOptions } from './reconciler.js';
