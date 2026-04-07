@@ -175,6 +175,7 @@ function applyOperation(
     }
     case 'set_metadata': {
       if (!op.key) throw new Error("set_metadata requires 'key'");
+      if (op.value === undefined) throw new Error("set_metadata requires 'value'");
       const ALLOWED_KEYS = new Set(['display_name', 'icon', 'extends', 'serialization']);
       if (!ALLOWED_KEYS.has(op.key)) {
         throw new Error(

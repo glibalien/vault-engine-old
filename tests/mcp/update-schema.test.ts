@@ -165,6 +165,14 @@ describe('updateSchema', () => {
     expect(schema!.serialization).toEqual({ filename_template: 'tasks/work/{{title}}.md' });
   });
 
+  it('errors when set_metadata value is missing', () => {
+    expect(() =>
+      updateSchema(db, tmpDir, 'task', [
+        { action: 'set_metadata', key: 'display_name' },
+      ]),
+    ).toThrow("set_metadata requires 'value'");
+  });
+
   it('errors on unsupported metadata key', () => {
     expect(() =>
       updateSchema(db, tmpDir, 'task', [
