@@ -177,6 +177,16 @@ describe('patchFrontmatter', () => {
       expect(result).not.toContain('People:');
       expect(result).toContain('people:');
     });
+
+    it('preserves flow-style arrays in untouched fields', () => {
+      const file = '---\nstatus: Todo\ntypes: [task, meeting]\ntags: [work, urgent]\n---\n\nBody.\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      expect(result).toContain('status: todo');
+      expect(result).toMatch(/types: \[.*task.*meeting.*\]/);
+      expect(result).toMatch(/tags: \[.*work.*urgent.*\]/);
+    });
   });
 
   describe('edge cases', () => {

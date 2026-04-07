@@ -1,6 +1,6 @@
 // src/serializer/patch.ts
 
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parseDocument } from 'yaml';
 
 export type FrontmatterMutation =
   | { type: 'rename_key'; from: string; to: string }
@@ -58,19 +58,17 @@ export function patchFrontmatter(
   );
 
   if (setValueMutations.length > 0) {
-    const parsed = parseYaml(yaml) as Record<string, unknown> | null;
-    if (parsed && typeof parsed === 'object') {
+    const doc = parseDocument(yaml);
+    if (doc.contents) {
       let changed = false;
       for (const mutation of setValueMutations) {
-        // Only mutate keys that already exist
-        if (mutation.key in parsed) {
-          parsed[mutation.key] = mutation.value;
+        if (doc.has(mutation.key)) {
+          doc.set(mutation.key, mutation.value);
           changed = true;
         }
       }
       if (changed) {
-        // Re-serialize; stringifyYaml always adds a trailing newline
-        yaml = stringifyYaml(parsed);
+        yaml = doc.toString();
       }
     }
   }
