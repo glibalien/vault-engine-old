@@ -18,7 +18,7 @@ export interface CoercionChange {
 
 export interface CoercionIssue {
   field: string;
-  policy: 'unknown_fields' | 'enum_validation';
+  policy: 'unknown_fields' | 'enum_validation' | 'type_conflict';
   severity: 'warning' | 'rejection';
   message: string;
 }

@@ -138,9 +138,15 @@ export function coerceFields(
   const issues: CoercionIssue[] = [];
 
   // Step 1: Resolve aliases (camelCase → snake_case, known variations)
+  // Include conflicted fields — they ARE defined in schemas, just with
+  // incompatible types across multi-type nodes. They must not be treated as unknown.
+  const conflictedFieldNames = new Set(
+    mergeResult.conflicts.filter(c => c.field !== '').map(c => c.field),
+  );
   const knownFieldNames = new Set([
     ...Object.keys(mergeResult.fields),
     ...Object.keys(globalFields ?? {}),
+    ...conflictedFieldNames,
   ]);
   const { fields: aliasedFields, changes: aliasChanges } = resolveAliases(fields, knownFieldNames);
   changes.push(...aliasChanges);
@@ -157,6 +163,18 @@ export function coerceFields(
 
     if (fieldType) {
       result[key] = coerceValue(key, value, fieldType, enumValues, changes, issues, enumPolicy);
+    } else if (conflictedFieldNames.has(key)) {
+      // Field is defined in schemas but has conflicting types across
+      // multi-type merging — pass through without coercion, warn about the conflict
+      const conflict = mergeResult.conflicts.find(c => c.field === key);
+      const defs = conflict?.definitions.map(d => `${d.schema}(${d.type})`).join(' vs ') ?? '';
+      issues.push({
+        field: key,
+        policy: 'type_conflict',
+        severity: 'warning',
+        message: `Field '${key}' has incompatible definitions across types: ${defs}; passing through unvalidated`,
+      });
+      result[key] = value;
     } else {
       // Unknown field — not in any schema or global definition
       unknownFields.push(key);
