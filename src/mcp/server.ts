@@ -15,7 +15,7 @@ import { serializeNode, computeFieldOrder, generateFilePath, writeNodeFile, dele
 import { indexFile, deleteFile, incrementalIndex } from '../sync/indexer.js';
 import { releaseWriteLock, acquireGlobalWriteLock, releaseGlobalWriteLock } from '../sync/watcher.js';
 import { updateBodyReferences, updateFrontmatterReferences, removeBodyWikiLink } from './rename-helpers.js';
-import { resolveReferences, resolveTarget, buildLookupMaps, resolveTargetWithMaps } from '../sync/resolver.js';
+import { resolveReferences, resolveTarget } from '../sync/resolver.js';
 import { traverseGraph } from '../graph/index.js';
 import { analyzeVault } from '../inference/analyzer.js';
 import { generateSchemas, writeSchemaFiles } from '../inference/generator.js';
@@ -28,7 +28,7 @@ import { normalizeFields } from './normalize-fields.js';
 import { findDuplicates } from './duplicates.js';
 import { updateSchema, type SchemaOperation } from './update-schema.js';
 import { buildQuerySql } from './query-builder.js';
-import { resolveById } from './resolve.js';
+import { resolveById, resolveByTitle } from './resolve.js';
 import type { ResolveResult, MatchTier } from './resolve.js';
 import { coerceFields } from '../coercion/coerce.js';
 import { loadGlobalFields } from '../coercion/globals.js';
@@ -1170,31 +1170,26 @@ export function createServer(
         .describe('Include computed field values from schema definitions'),
     },
     async ({ node_id, title, include_relationships, include_computed }) => {
-      // Resolve node_id from title if needed
-      let resolvedId = node_id;
-      if (!resolvedId) {
-        if (!title) {
-          return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
-        }
-        const { titleMap, pathMap } = buildLookupMaps(db);
-        const resolved = resolveTargetWithMaps(title, titleMap, pathMap);
-        if (!resolved) {
-          // Distinguish not found vs ambiguous
-          const candidates = titleMap.get(title.toLowerCase());
-          if (candidates && candidates.length > 1) {
-            return toolError(
-              `Multiple nodes match title '${title}': ${candidates.join(', ')}`,
-              'VALIDATION_ERROR',
-            );
-          }
-          return toolError(`No node found with title '${title}'`, 'NOT_FOUND');
-        }
-        resolvedId = resolved;
+      if (!node_id && !title) {
+        return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
       }
 
-      if (hasPathTraversal(resolvedId)) {
+      if (node_id && hasPathTraversal(node_id)) {
         return toolError('Invalid node_id: path traversal segments ("..") are not allowed', 'VALIDATION_ERROR');
       }
+
+      const resolved = node_id ? resolveById(db, node_id) : resolveByTitle(db, title!);
+      if (!resolved.found) {
+        if (!node_id && resolved.candidates && resolved.candidates.length > 1) {
+          return toolError(
+            `Multiple nodes match title '${title}': ${resolved.candidates.map(c => c.id).join(', ')}`,
+            'VALIDATION_ERROR',
+          );
+        }
+        const label = node_id ? `Node not found: ${node_id}` : `No node found with title '${title}'`;
+        return toolError(label, 'NOT_FOUND');
+      }
+      const resolvedId = resolved.node.id;
       const row = db.prepare(`
         SELECT id, file_path, node_type, title, content_text, content_md, updated_at
         FROM nodes WHERE id = ?
@@ -1994,29 +1989,26 @@ export function createServer(
     },
     async ({ node_id, title }) => {
       // 1. Resolve node ID
-      let resolvedId = node_id;
-      if (!resolvedId) {
-        if (!title) {
-          return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
-        }
-        const { titleMap, pathMap } = buildLookupMaps(db);
-        const resolved = resolveTargetWithMaps(title, titleMap, pathMap);
-        if (!resolved) {
-          const candidates = titleMap.get(title.toLowerCase());
-          if (candidates && candidates.length > 1) {
-            return toolError(
-              `Multiple nodes match title '${title}': ${candidates.join(', ')}`,
-              'VALIDATION_ERROR',
-            );
-          }
-          return toolError(`No node found with title '${title}'`, 'NOT_FOUND');
-        }
-        resolvedId = resolved;
+      if (!node_id && !title) {
+        return toolError('Either node_id or title must be provided', 'VALIDATION_ERROR');
       }
 
-      if (hasPathTraversal(resolvedId)) {
+      if (node_id && hasPathTraversal(node_id)) {
         return toolError('Invalid node_id: path traversal not allowed', 'VALIDATION_ERROR');
       }
+
+      const resolved = node_id ? resolveById(db, node_id) : resolveByTitle(db, title!);
+      if (!resolved.found) {
+        if (!node_id && resolved.candidates && resolved.candidates.length > 1) {
+          return toolError(
+            `Multiple nodes match title '${title}': ${resolved.candidates.map(c => c.id).join(', ')}`,
+            'VALIDATION_ERROR',
+          );
+        }
+        const label = node_id ? `Node not found: ${node_id}` : `No node found with title '${title}'`;
+        return toolError(label, 'NOT_FOUND');
+      }
+      const resolvedId = resolved.node.id;
 
       // 2. Load node from DB
       const row = db.prepare(`

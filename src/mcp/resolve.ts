@@ -38,7 +38,7 @@ export interface NodeRow {
 
 export type ResolveResult =
   | { found: true; node: NodeRow; matchType: MatchTier }
-  | { found: false; identifier: string; tried: MatchTier[] };
+  | { found: false; identifier: string; tried: MatchTier[]; candidates?: NodeRow[] };
 
 // ---------------------------------------------------------------------------
 // resolveById — three-tier resolution for node IDs (vault-relative paths)
@@ -95,7 +95,7 @@ export function resolveByTitle(db: Database.Database, title: string): ResolveRes
   }
   if (exactMatches.length > 1) {
     // Ambiguous at tier 1
-    return { found: false, identifier: title, tried: ['exact'] };
+    return { found: false, identifier: title, tried: ['exact'], candidates: exactMatches };
   }
 
   // Tier 2: NFC-normalized case-insensitive match
@@ -105,7 +105,7 @@ export function resolveByTitle(db: Database.Database, title: string): ResolveRes
     return { found: true, node: nfcMatches[0], matchType: 'nfc' };
   }
   if (nfcMatches.length > 1) {
-    return { found: false, identifier: title, tried: ['exact', 'nfc'] };
+    return { found: false, identifier: title, tried: ['exact', 'nfc'], candidates: nfcMatches };
   }
 
   // Tier 3: typographic-normalized match
@@ -115,7 +115,7 @@ export function resolveByTitle(db: Database.Database, title: string): ResolveRes
     return { found: true, node: typoMatches[0], matchType: 'typographic' };
   }
   if (typoMatches.length > 1) {
-    return { found: false, identifier: title, tried: ['exact', 'nfc', 'typographic'] };
+    return { found: false, identifier: title, tried: ['exact', 'nfc', 'typographic'], candidates: typoMatches };
   }
 
   return { found: false, identifier: title, tried: ['exact', 'nfc', 'typographic'] };
