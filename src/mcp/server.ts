@@ -26,6 +26,7 @@ import { readImage, readAudio, readDocument } from '../attachments/readers.js';
 import type { ImageContent, TextContent } from '../attachments/types.js';
 import { normalizeFields } from './normalize-fields.js';
 import { findDuplicates } from './duplicates.js';
+import { updateSchema, type SchemaOperation } from './update-schema.js';
 import { buildQuerySql } from './query-builder.js';
 import { coerceFields } from '../coercion/coerce.js';
 import { loadGlobalFields } from '../coercion/globals.js';
@@ -2276,6 +2277,58 @@ export function createServer(
         return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
       } catch (err) {
         return toolError(err instanceof Error ? err.message : String(err), 'INTERNAL_ERROR');
+      }
+    },
+  );
+
+  // ── update-schema ──────────────────────────────────────────────
+  server.tool(
+    'update-schema',
+    'Update a schema definition. Add, remove, rename, or modify fields and metadata. ' +
+    'Changes are written to .schemas/*.yaml and reloaded into the DB immediately. ' +
+    'If the schema does not exist yet, it will be created. ' +
+    'This tool modifies schema definitions only — it does not touch vault files. ' +
+    'Use normalize-fields to propagate schema changes to existing files. ' +
+    'Note: YAML comments in schema files are not preserved on write.',
+    {
+      schema_name: z.string().min(1)
+        .describe("Name of the schema to update or create, e.g. 'task', 'meeting'"),
+      operations: z.array(z.object({
+        action: z.enum(['add_field', 'remove_field', 'rename_field', 'update_field', 'set_metadata'])
+          .describe('Operation to perform'),
+        field: z.string().optional()
+          .describe('Field name (required for all field actions)'),
+        definition: z.object({
+          type: z.string().optional()
+            .describe("Field type: 'string', 'number', 'date', 'boolean', 'reference', 'enum', 'list<string>', 'list<reference>'"),
+          values: z.array(z.string()).optional()
+            .describe('For enum fields: valid values'),
+          required: z.boolean().optional(),
+          target_schema: z.string().optional()
+            .describe('For reference fields: expected target schema type'),
+          default: z.any().optional(),
+        }).optional()
+          .describe('Field definition (required for add_field, update_field)'),
+        new_name: z.string().optional()
+          .describe('For rename_field: the new field name'),
+        key: z.string().optional()
+          .describe("For set_metadata: metadata key (display_name, icon, extends, serialization)"),
+        value: z.any().optional()
+          .describe('For set_metadata: metadata value'),
+      })).min(1)
+        .describe('Operations to apply sequentially'),
+    },
+    async ({ schema_name, operations }) => {
+      try {
+        const result = updateSchema(db, vaultPath, schema_name, operations as SchemaOperation[]);
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+        };
+      } catch (err) {
+        return toolError(
+          err instanceof Error ? err.message : String(err),
+          'VALIDATION_ERROR',
+        );
       }
     },
   );

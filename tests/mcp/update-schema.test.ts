@@ -6,6 +6,9 @@ import Database from 'better-sqlite3';
 import { createSchema } from '../../src/db/schema.js';
 import { loadSchemas, getSchema } from '../../src/schema/loader.js';
 import { updateSchema } from '../../src/mcp/update-schema.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createServer } from '../../src/mcp/server.js';
 
 describe('updateSchema', () => {
   let db: Database.Database;
@@ -298,5 +301,115 @@ describe('updateSchema', () => {
     // due_date should NOT have been added (atomicity)
     const schema = getSchema(db, 'task');
     expect(schema!.fields.due_date).toBeUndefined();
+  });
+});
+
+describe('update-schema MCP tool', () => {
+  let db: Database.Database;
+  let client: Client;
+  let cleanup: () => Promise<void>;
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    createSchema(db);
+    tmpDir = mkdtempSync(join(tmpdir(), 'vault-update-schema-mcp-'));
+
+    // Create a base task schema
+    const schemasDir = join(tmpDir, '.schemas');
+    mkdirSync(schemasDir, { recursive: true });
+    writeFileSync(
+      join(schemasDir, 'task.yaml'),
+      [
+        'name: task',
+        'display_name: Task',
+        'icon: check',
+        'fields:',
+        '  status:',
+        '    type: enum',
+        '    values: [todo, in-progress, done]',
+        '    required: true',
+        '  assignee:',
+        '    type: reference',
+        '    target_schema: person',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    loadSchemas(db, tmpDir);
+
+    const server = createServer(db, tmpDir);
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    client = new Client({ name: 'test-client', version: '0.1.0' });
+    await client.connect(clientTransport);
+    cleanup = async () => {
+      await client.close();
+      await server.close();
+      db.close();
+    };
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  async function callTool(toolName: string, args: Record<string, unknown>) {
+    const result = await client.callTool({ name: toolName, arguments: args });
+    return JSON.parse((result.content as Array<{ text: string }>)[0].text);
+  }
+
+  it('adds a field via MCP tool', async () => {
+    const result = await callTool('update-schema', {
+      schema_name: 'task',
+      operations: [
+        { action: 'add_field', field: 'due_date', definition: { type: 'date' } },
+      ],
+    });
+
+    expect(result.operations_applied).toBe(1);
+    expect(result.file_path).toBe('.schemas/task.yaml');
+    expect(result.schema.fields.due_date).toEqual({ type: 'date' });
+  });
+
+  it('creates a new schema via MCP tool', async () => {
+    const result = await callTool('update-schema', {
+      schema_name: 'project',
+      operations: [
+        { action: 'set_metadata', key: 'display_name', value: 'Project' },
+        { action: 'add_field', field: 'status', definition: { type: 'enum', values: ['active', 'done'] } },
+      ],
+    });
+
+    expect(result.schema.name).toBe('project');
+    expect(result.schema.fields.status.type).toBe('enum');
+  });
+
+  it('returns error for invalid operations', async () => {
+    const result = await callTool('update-schema', {
+      schema_name: 'task',
+      operations: [
+        { action: 'add_field', field: 'bad', definition: { type: 'invalid' } },
+      ],
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('subsequent describe-schema reflects changes', async () => {
+    await callTool('update-schema', {
+      schema_name: 'task',
+      operations: [
+        { action: 'add_field', field: 'priority', definition: { type: 'enum', values: ['high', 'medium', 'low'] } },
+      ],
+    });
+
+    const schema = await callTool('describe-schema', { schema_name: 'task' });
+    expect(schema.fields.priority).toBeDefined();
+    expect(schema.fields.priority.type).toBe('enum');
   });
 });
