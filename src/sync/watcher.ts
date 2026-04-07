@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { relative, join, basename } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
@@ -6,6 +6,9 @@ import type Database from 'better-sqlite3';
 import { parseFile } from '../parser/index.js';
 import { indexFile, deleteFile } from './indexer.js';
 import { resolveReferences } from './resolver.js';
+import type { EnforcementConfig } from '../enforcement/types.js';
+import type { GlobalFieldDefinition } from '../coercion/types.js';
+import { normalizeOnIndex } from './normalize-on-index.js';
 
 // Directories to exclude from watching.
 // chokidar v5 treats string ignored patterns as exact matches (not globs),
@@ -44,6 +47,9 @@ export interface WatcherOptions {
   debounceMs?: number;
   ignorePaths?: string[];
   onSchemaChange?: () => void;
+  enforcementConfig?: EnforcementConfig;
+  globalFields?: Record<string, GlobalFieldDefinition>;
+  skipNormalize?: boolean;
 }
 
 export function watchVault(
@@ -89,15 +95,42 @@ export function watchVault(
 
     debounced(rel, () => {
       try {
-        const raw = readFileSync(absPath, 'utf-8');
+        let raw = readFileSync(absPath, 'utf-8');
         const hash = createHash('sha256').update(raw).digest('hex');
         const existing = db.prepare('SELECT hash FROM files WHERE path = ?').get(rel) as
           | { hash: string }
           | undefined;
         if (existing && existing.hash === hash) return;
 
+        let parsed = parseFile(rel, raw);
+
+        // Normalize-on-index
+        if (opts?.enforcementConfig && !opts?.skipNormalize) {
+          const noiResult = normalizeOnIndex(
+            raw, parsed, absPath, rel,
+            opts.enforcementConfig,
+            opts.globalFields ?? {},
+            db,
+          );
+          if (noiResult.patched) {
+            acquireWriteLock(rel);
+            try {
+              writeFileSync(absPath, noiResult.raw, 'utf-8');
+            } finally {
+              releaseWriteLock(rel);
+            }
+            process.stderr.write(`[vault-engine] watcher: normalized ${rel}\n`);
+          }
+          if (noiResult.warnings.length > 0) {
+            for (const w of noiResult.warnings) {
+              process.stderr.write(`[vault-engine] normalize-on-index warn: ${rel}: ${w}\n`);
+            }
+          }
+          raw = noiResult.raw;
+          parsed = noiResult.parsed;
+        }
+
         const mtime = statSync(absPath).mtime.toISOString();
-        const parsed = parseFile(rel, raw);
         db.transaction(() => {
           indexFile(db, parsed, rel, mtime, raw);
           resolveReferences(db);

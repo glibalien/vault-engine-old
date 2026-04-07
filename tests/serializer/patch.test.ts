@@ -99,6 +99,86 @@ describe('patchFrontmatter', () => {
     });
   });
 
+  describe('set_value', () => {
+    it('replaces an enum value', () => {
+      const file = '---\nstatus: Todo\ntitle: My Task\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      expect(result).toContain('status: todo');
+      expect(result).not.toContain('status: Todo');
+    });
+
+    it('replaces a boolean string with a real boolean', () => {
+      const file = '---\ncompleted: "true"\ntitle: My Task\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'completed', value: true },
+      ]);
+      expect(result).toContain('completed: true');
+      expect(result).not.toContain('completed: "true"');
+    });
+
+    it('replaces a string number with a real number', () => {
+      const file = '---\npriority: "3"\ntitle: My Task\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'priority', value: 3 },
+      ]);
+      expect(result).toContain('priority: 3');
+      expect(result).not.toContain('priority: "3"');
+    });
+
+    it('wraps a bare string as wiki-link reference', () => {
+      const file = '---\nassignee: Alice\ntitle: My Task\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'assignee', value: '[[Alice]]' },
+      ]);
+      expect(result).toContain('assignee: "[[Alice]]"');
+      expect(result).not.toContain('assignee: Alice\n');
+    });
+
+    it('preserves keys not targeted by set_value', () => {
+      const file = '---\nstatus: Todo\ntitle: My Task\npriority: 1\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      expect(result).toContain('title: My Task');
+      expect(result).toContain('priority: 1');
+    });
+
+    it('preserves body content byte-for-byte', () => {
+      const body = '\nBody with [[wiki-links]] and *formatting*.\n\nAnother paragraph.\n';
+      const file = '---\nstatus: Todo\ntitle: My Task\n---\n' + body;
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      const resultBody = result.slice(result.indexOf('---\n', 4) + 4);
+      expect(resultBody).toBe(body);
+    });
+
+    it('is a no-op for a key that does not exist in frontmatter', () => {
+      const file = '---\nstatus: Todo\ntitle: My Task\ntypes: [meeting, task]\n---\n\nBody.\n';
+      const result = patchFrontmatter(file, [
+        { type: 'set_value', key: 'nonexistent', value: 'something' },
+      ]);
+      expect(result).toBe(file);
+    });
+
+    it('works combined with rename_key and coerce_value in the same mutation set', () => {
+      const file = '---\nStatus: Todo\nPeople: "[[Alice]]"\ntags: work\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'rename_key', from: 'Status', to: 'status' },
+        { type: 'rename_key', from: 'People', to: 'people' },
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      // rename_key applied first, then set_value operates on canonical name
+      expect(result).toContain('status: todo');
+      expect(result).not.toContain('Status:');
+      expect(result).not.toContain('People:');
+      expect(result).toContain('people:');
+    });
+  });
+
   describe('edge cases', () => {
     it('returns unchanged content if no frontmatter', () => {
       const noFm = 'Just body content\nNo frontmatter here\n';
