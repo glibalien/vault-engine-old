@@ -23,3 +23,100 @@ export function normalizeTypographic(str: string): string {
 export function normalizeForLookup(str: string): string {
   return normalizeTypographic(str.normalize('NFC')).toLowerCase();
 }
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type MatchTier = 'exact' | 'nfc' | 'typographic';
+
+export interface NodeRow {
+  id: string;
+  file_path: string;
+  title: string | null;
+}
+
+export type ResolveResult =
+  | { found: true; node: NodeRow; matchType: MatchTier }
+  | { found: false; identifier: string; tried: MatchTier[] };
+
+// ---------------------------------------------------------------------------
+// resolveById — three-tier resolution for node IDs (vault-relative paths)
+// ---------------------------------------------------------------------------
+
+export function resolveById(db: Database.Database, nodeId: string): ResolveResult {
+  // Tier 1: exact SQL match
+  const exact = db.prepare('SELECT id, file_path, title FROM nodes WHERE id = ?').get(nodeId) as NodeRow | undefined;
+  if (exact) {
+    return { found: true, node: exact, matchType: 'exact' };
+  }
+
+  // Tier 2: NFC-normalized match
+  // First try direct SQL with NFC-normalized input
+  const nfcInput = nodeId.normalize('NFC');
+  const nfcDirect = db.prepare('SELECT id, file_path, title FROM nodes WHERE id = ?').get(nfcInput) as NodeRow | undefined;
+  if (nfcDirect) {
+    return { found: true, node: nfcDirect, matchType: 'nfc' };
+  }
+
+  // Load all node IDs for in-memory comparison
+  const allNodes = db.prepare('SELECT id, file_path, title FROM nodes').all() as NodeRow[];
+
+  // NFC case-insensitive comparison
+  const nfcLower = nfcInput.toLowerCase();
+  const nfcMatches = allNodes.filter(row => row.id.normalize('NFC').toLowerCase() === nfcLower);
+  if (nfcMatches.length === 1) {
+    return { found: true, node: nfcMatches[0], matchType: 'nfc' };
+  }
+
+  // Tier 3: typographic-normalized match
+  const lookupNorm = normalizeForLookup(nodeId);
+  const typoMatches = allNodes.filter(row => normalizeForLookup(row.id) === lookupNorm);
+  if (typoMatches.length === 1) {
+    return { found: true, node: typoMatches[0], matchType: 'typographic' };
+  }
+
+  return { found: false, identifier: nodeId, tried: ['exact', 'nfc', 'typographic'] };
+}
+
+// ---------------------------------------------------------------------------
+// resolveByTitle — three-tier resolution for titles (case-insensitive)
+// ---------------------------------------------------------------------------
+
+export function resolveByTitle(db: Database.Database, title: string): ResolveResult {
+  // Load all nodes with non-null titles
+  const allNodes = db.prepare('SELECT id, file_path, title FROM nodes WHERE title IS NOT NULL').all() as NodeRow[];
+
+  // Tier 1: exact case-insensitive match
+  const titleLower = title.toLowerCase();
+  const exactMatches = allNodes.filter(row => row.title!.toLowerCase() === titleLower);
+  if (exactMatches.length === 1) {
+    return { found: true, node: exactMatches[0], matchType: 'exact' };
+  }
+  if (exactMatches.length > 1) {
+    // Ambiguous at tier 1
+    return { found: false, identifier: title, tried: ['exact'] };
+  }
+
+  // Tier 2: NFC-normalized case-insensitive match
+  const nfcTitle = title.normalize('NFC').toLowerCase();
+  const nfcMatches = allNodes.filter(row => row.title!.normalize('NFC').toLowerCase() === nfcTitle);
+  if (nfcMatches.length === 1) {
+    return { found: true, node: nfcMatches[0], matchType: 'nfc' };
+  }
+  if (nfcMatches.length > 1) {
+    return { found: false, identifier: title, tried: ['exact', 'nfc'] };
+  }
+
+  // Tier 3: typographic-normalized match
+  const lookupNorm = normalizeForLookup(title);
+  const typoMatches = allNodes.filter(row => normalizeForLookup(row.title!) === lookupNorm);
+  if (typoMatches.length === 1) {
+    return { found: true, node: typoMatches[0], matchType: 'typographic' };
+  }
+  if (typoMatches.length > 1) {
+    return { found: false, identifier: title, tried: ['exact', 'nfc', 'typographic'] };
+  }
+
+  return { found: false, identifier: title, tried: ['exact', 'nfc', 'typographic'] };
+}
