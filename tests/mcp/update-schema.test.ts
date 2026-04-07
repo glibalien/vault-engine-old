@@ -257,6 +257,35 @@ describe('updateSchema', () => {
     expect(schema!.extends).toBeUndefined();
   });
 
+  it('warns when updating a field inherited from a parent schema', () => {
+    // Create work-task that extends task
+    writeFileSync(
+      join(tmpDir, '.schemas', 'work-task.yaml'),
+      [
+        'name: work-task',
+        'extends: task',
+        'fields:',
+        '  department:',
+        '    type: string',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    loadSchemas(db, tmpDir);
+
+    // Adding a field that also exists in the parent (override)
+    const result = updateSchema(db, tmpDir, 'work-task', [
+      { action: 'add_field', field: 'status', definition: { type: 'enum', values: ['open', 'closed'] } },
+    ]);
+
+    expect(result.warnings).toContain(
+      "Field 'status' is inherited from parent schema 'task'; this add_field creates a local override in 'work-task'.",
+    );
+    // The field should be added locally
+    const schema = getSchema(db, 'work-task');
+    expect(schema!.fields.status.values).toEqual(['open', 'closed']);
+  });
+
   it('applies multiple operations atomically', () => {
     // Second operation should fail, so first should not be applied either
     expect(() =>

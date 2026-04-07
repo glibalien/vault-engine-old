@@ -58,9 +58,18 @@ export function updateSchema(
     schema = { name: schemaName, fields: {} };
   }
 
+  // Resolve parent fields for inheritance warnings
+  let parentFields: Record<string, FieldDefinition> = {};
+  if (schema.extends) {
+    const parentResolved = getSchema(db, schema.extends);
+    if (parentResolved) {
+      parentFields = parentResolved.fields;
+    }
+  }
+
   // Apply all operations to in-memory copy
   for (const op of operations) {
-    applyOperation(schema, op, schemaName);
+    applyOperation(schema, op, schemaName, parentFields, warnings);
   }
 
   // Validate final result
@@ -106,6 +115,8 @@ function applyOperation(
   schema: SchemaDefinition,
   op: SchemaOperation,
   schemaName: string,
+  parentFields: Record<string, FieldDefinition>,
+  warnings: string[],
 ): void {
   switch (op.action) {
     case 'add_field': {
@@ -113,6 +124,11 @@ function applyOperation(
       if (!op.definition) throw new Error("add_field requires 'definition'");
       if (schema.fields[op.field]) {
         throw new Error(`Field '${op.field}' already exists in schema '${schemaName}'`);
+      }
+      if (parentFields[op.field]) {
+        warnings.push(
+          `Field '${op.field}' is inherited from parent schema '${schema.extends}'; this add_field creates a local override in '${schemaName}'.`,
+        );
       }
       schema.fields[op.field] = op.definition as FieldDefinition;
       break;
