@@ -1,6 +1,7 @@
 // src/serializer/patch.ts
 
-import { parseDocument } from 'yaml';
+import { isSeq, parseDocument } from 'yaml';
+import { serializeKey } from './frontmatter.js';
 
 export type FrontmatterMutation =
   | { type: 'rename_key'; from: string; to: string }
@@ -24,7 +25,7 @@ export function patchFrontmatter(
   const [, open, rawYaml, close, body] = fmMatch;
   let yaml = rawYaml;
 
-  // Phase 1: Apply rename_key and coerce_value mutations via regex
+  // Phase 1: Apply rename_key mutations via regex
   for (const mutation of mutations) {
     if (mutation.type === 'rename_key') {
       // Skip if target key already exists in the YAML
@@ -33,37 +34,34 @@ export function patchFrontmatter(
 
       // Replace key name at start of line, preserving the colon and everything after
       const sourceRe = new RegExp(`^${escapeRegExp(mutation.from)}(:)`, 'm');
-      yaml = yaml.replace(sourceRe, `${mutation.to}$1`);
-    } else if (mutation.type === 'coerce_value') {
-      // Only coerce for list target types
-      if (!mutation.targetType.startsWith('list')) continue;
-
-      // Find the key's line and wrap non-array value in brackets
-      const keyRe = new RegExp(
-        `^(${escapeRegExp(mutation.key)}:\\s+)(.+)$`,
-        'm',
-      );
-      yaml = yaml.replace(keyRe, (_match, prefix: string, value: string) => {
-        const trimmed = value.trim();
-        if (trimmed.startsWith('[')) return prefix + value; // Already an array
-        return `${prefix}[${trimmed}]`;
-      });
+      yaml = yaml.replace(sourceRe, `${serializeKey(mutation.to)}$1`);
     }
   }
 
-  // Phase 2: Apply set_value mutations via parse-mutate-serialize
-  const setValueMutations = mutations.filter(
-    (m): m is Extract<FrontmatterMutation, { type: 'set_value' }> =>
-      m.type === 'set_value',
+  // Phase 2: Apply set_value and coerce_value mutations via parse-mutate-serialize
+  const phase2Mutations = mutations.filter(
+    (m): m is Extract<FrontmatterMutation, { type: 'set_value' } | { type: 'coerce_value' }> =>
+      m.type === 'set_value' || m.type === 'coerce_value',
   );
 
-  if (setValueMutations.length > 0) {
+  if (phase2Mutations.length > 0) {
     const doc = parseDocument(yaml);
     if (doc.contents) {
       let changed = false;
-      for (const mutation of setValueMutations) {
-        if (doc.has(mutation.key)) {
-          doc.set(mutation.key, mutation.value);
+      for (const mutation of phase2Mutations) {
+        if (mutation.type === 'set_value') {
+          if (doc.has(mutation.key)) {
+            doc.set(mutation.key, mutation.value);
+            changed = true;
+          }
+        } else {
+          // coerce_value: wrap non-array scalar values in a single-element list
+          if (!mutation.targetType.startsWith('list')) continue;
+          if (!doc.has(mutation.key)) continue;
+          const node = doc.get(mutation.key, true);
+          if (node == null || isSeq(node)) continue; // already a list or null
+          // It's a scalar — wrap it in a single-element array
+          doc.set(mutation.key, [doc.get(mutation.key)]);
           changed = true;
         }
       }

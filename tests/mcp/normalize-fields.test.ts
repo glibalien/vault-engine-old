@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
+import matter from 'gray-matter';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
@@ -195,7 +196,8 @@ describe('normalize-fields', () => {
       await callTool({ mode: 'apply' });
 
       const content = readFileSync(join(vaultPath, 'meetings/a.md'), 'utf-8');
-      expect(content).toContain('people involved: ["[[Alice]]"]');
+      const parsed = matter(content).data;
+      expect(parsed['people involved']).toEqual(['[[Alice]]']);
     });
 
     it('preserves body content byte-for-byte', async () => {
@@ -242,7 +244,8 @@ describe('normalize-fields', () => {
       await callTool({ mode: 'apply' });
 
       const content = readFileSync(join(vaultPath, 'meetings/a.md'), 'utf-8');
-      expect(content).toContain('people involved: ["[[Alice]]"]');
+      const parsed = matter(content).data;
+      expect(parsed['people involved']).toEqual(['[[Alice]]']);
       expect(content).not.toContain('People Involved');
     });
 

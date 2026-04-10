@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import matter from 'gray-matter';
 import { patchFrontmatter } from '../../src/serializer/patch.js';
 
 describe('patchFrontmatter', () => {
@@ -49,7 +50,8 @@ describe('patchFrontmatter', () => {
       const result = patchFrontmatter(baseFile, [
         { type: 'coerce_value', key: 'people involved', targetType: 'list<reference>' },
       ]);
-      expect(result).toContain('people involved: ["[[Alice]]"]');
+      const parsed = matter(result).data;
+      expect(parsed['people involved']).toEqual(['[[Alice]]']);
     });
 
     it('wraps bare string in array for list<string>', () => {
@@ -57,15 +59,17 @@ describe('patchFrontmatter', () => {
       const result = patchFrontmatter(file, [
         { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
       ]);
-      expect(result).toContain('tags: [work]');
+      const parsed = matter(result).data;
+      expect(parsed.tags).toEqual(['work']);
     });
 
-    it('does not double-wrap existing arrays', () => {
+    it('does not double-wrap existing flow-style arrays', () => {
       const file = '---\ntags: [work, play]\n---\n\nBody\n';
       const result = patchFrontmatter(file, [
         { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
       ]);
-      expect(result).toContain('tags: [work, play]');
+      const parsed = matter(result).data;
+      expect(parsed.tags).toEqual(['work', 'play']);
     });
 
     it('is a no-op for non-list target types', () => {
@@ -94,7 +98,8 @@ describe('patchFrontmatter', () => {
         { type: 'rename_key', from: 'People Involved', to: 'people involved' },
         { type: 'coerce_value', key: 'people involved', targetType: 'list<reference>' },
       ]);
-      expect(result).toContain('people involved: ["[[Alice]]"]');
+      const parsed = matter(result).data;
+      expect(parsed['people involved']).toEqual(['[[Alice]]']);
       expect(result).not.toContain('People Involved');
     });
   });
@@ -171,11 +176,13 @@ describe('patchFrontmatter', () => {
         { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
         { type: 'set_value', key: 'status', value: 'todo' },
       ]);
+      const parsed = matter(result).data;
       // rename_key applied first, then set_value operates on canonical name
-      expect(result).toContain('status: todo');
+      expect(parsed.status).toBe('todo');
+      expect(parsed.tags).toEqual(['work']);
       expect(result).not.toContain('Status:');
       expect(result).not.toContain('People:');
-      expect(result).toContain('people:');
+      expect(parsed.people).toBe('[[Alice]]');
     });
 
     it('preserves flow-style arrays in untouched fields', () => {
@@ -209,6 +216,152 @@ describe('patchFrontmatter', () => {
       expect(result).toContain('types: [meeting]');
       expect(result).toContain('status: active');
       expect(result).toContain('people involved: "[[Alice]]"');
+    });
+  });
+
+  describe('coerce_value block-style list handling', () => {
+    it('does not corrupt block-style multi-line lists', () => {
+      const file = [
+        '---',
+        'title: Meeting Notes',
+        'types: [meeting]',
+        'people involved:',
+        '  - "[[Raphael Berdugo]]"',
+        '---',
+        '',
+        'Body content.',
+        '',
+      ].join('\n');
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'people involved', targetType: 'list<reference>' },
+      ]);
+      // Must produce valid YAML that parses back correctly
+      const parsed = matter(result).data;
+      expect(parsed['people involved']).toEqual(['[[Raphael Berdugo]]']);
+      // Must NOT contain the corruption patterns
+      expect(result).not.toContain('[-');
+      expect(result).not.toContain('[people involved:]');
+    });
+
+    it('wraps scalar to single-element list', () => {
+      const file = '---\ntags: foo\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+      ]);
+      const parsed = matter(result).data;
+      expect(parsed.tags).toEqual(['foo']);
+    });
+
+    it('is a no-op for existing block-style list', () => {
+      const file = [
+        '---',
+        'tags:',
+        '  - alpha',
+        '  - beta',
+        '---',
+        '',
+        'Body',
+        '',
+      ].join('\n');
+      const before = matter(file).data;
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+      ]);
+      const after = matter(result).data;
+      expect(after.tags).toEqual(before.tags);
+    });
+
+    it('is a no-op for existing flow-style list', () => {
+      const file = '---\ntags: [alpha, beta]\n---\n\nBody\n';
+      const before = matter(file).data;
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+      ]);
+      const after = matter(result).data;
+      expect(after.tags).toEqual(before.tags);
+    });
+
+    it('is a no-op for missing key', () => {
+      const file = '---\ntitle: Test\n---\n\nBody\n';
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+      ]);
+      expect(result).toBe(file);
+    });
+
+    it('handles combined rename_key + set_value + coerce_value', () => {
+      const file = [
+        '---',
+        'Status: Todo',
+        'People: "[[Alice]]"',
+        'tags: work',
+        'priority: 3',
+        '---',
+        '',
+        'Body',
+        '',
+      ].join('\n');
+      const result = patchFrontmatter(file, [
+        { type: 'rename_key', from: 'Status', to: 'status' },
+        { type: 'rename_key', from: 'People', to: 'people' },
+        { type: 'coerce_value', key: 'tags', targetType: 'list<string>' },
+        { type: 'coerce_value', key: 'people', targetType: 'list<reference>' },
+        { type: 'set_value', key: 'status', value: 'todo' },
+      ]);
+      const parsed = matter(result).data;
+      expect(parsed.status).toBe('todo');
+      expect(parsed.tags).toEqual(['work']);
+      expect(parsed.people).toEqual(['[[Alice]]']);
+      expect(parsed.priority).toBe(3);
+      expect(result).not.toContain('Status:');
+      expect(result).not.toContain('People:');
+    });
+
+    it('handles the real repro file (Barry - Raphael 2026-04-10.md)', () => {
+      const file = [
+        '---',
+        'title: Barry - Raphael 2026-04-10',
+        'types:',
+        '  - meeting',
+        'date: 2026-04-10',
+        'people involved:',
+        '  - "[[Raphael Berdugo]]"',
+        'company: "[[Lux Harmonics]]"',
+        'status: completed',
+        '---',
+        '',
+        '## Agenda',
+        '',
+        '- Discuss Q2 planning',
+        '- Review deliverables',
+        '',
+        '## Notes',
+        '',
+        'Meeting went well. Follow up on [[Project Alpha]] next week.',
+        '',
+      ].join('\n');
+
+      // Dispatch the mutations that normalizeOnIndex would dispatch
+      const result = patchFrontmatter(file, [
+        { type: 'coerce_value', key: 'people involved', targetType: 'list<reference>' },
+        { type: 'coerce_value', key: 'company', targetType: 'reference' },
+      ]);
+
+      // Output must be valid YAML
+      const parsed = matter(result).data;
+      expect(parsed['people involved']).toEqual(['[[Raphael Berdugo]]']);
+      expect(parsed.company).toBe('[[Lux Harmonics]]');
+      expect(parsed.title).toBe('Barry - Raphael 2026-04-10');
+      expect(parsed.status).toBe('completed');
+
+      // Must NOT contain the corruption patterns
+      expect(result).not.toContain('[people involved:]');
+      expect(result).not.toContain('[-');
+
+      // Body must be preserved
+      expect(result).toContain('## Agenda');
+      expect(result).toContain('## Notes');
+      expect(result).toContain('[[Project Alpha]]');
     });
   });
 });
