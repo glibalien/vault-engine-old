@@ -4,6 +4,12 @@ const YAML_NULL_RE = /^(null|Null|NULL|~)$/;
 const YAML_NUMBER_RE = /^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
 // Safe: alphanumeric, spaces, hyphens, underscores, periods — no leading/trailing whitespace
 const SAFE_STRING_RE = /^[a-zA-Z][a-zA-Z0-9 _.\-]*$/;
+// Safe key: letter or underscore start, then alphanumeric/underscore/hyphen only (no spaces, no periods)
+const SAFE_KEY_RE = /^[a-zA-Z_][a-zA-Z0-9_\-]*$/;
+
+export function serializeKey(key: string): string {
+  return SAFE_KEY_RE.test(key) ? key : quoteString(key);
+}
 
 function needsQuoting(value: string): boolean {
   if (value === '') return true;
@@ -36,7 +42,7 @@ export function serializeFrontmatter(
   entries: Array<{ key: string; value: unknown }>,
 ): string {
   if (entries.length === 0) return '';
-  return entries.map(({ key, value }) => `${key}: ${serializeValue(value)}`).join('\n') + '\n';
+  return entries.map(({ key, value }) => `${serializeKey(key)}: ${serializeValue(value)}`).join('\n') + '\n';
 }
 
 export function serializeValue(value: unknown): string {

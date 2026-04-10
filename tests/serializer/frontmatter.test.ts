@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { serializeValue, serializeFrontmatter } from '../../src/serializer/frontmatter.js';
+import matter from 'gray-matter';
+import { serializeValue, serializeFrontmatter, serializeKey } from '../../src/serializer/frontmatter.js';
 
 describe('serializeValue', () => {
   it('serializes plain strings unquoted', () => {
@@ -120,6 +121,75 @@ describe('serializeFrontmatter', () => {
     expect(lines[4]).toBe('status: todo');
     expect(lines[5]).toBe('billable: false');
     expect(lines[6]).toBe('priority: 3');
+  });
+
+  it('returns empty string for empty entries', () => {
+    expect(serializeFrontmatter([])).toBe('');
+  });
+});
+
+describe('serializeKey', () => {
+  it('leaves safe alphanumeric keys unquoted', () => {
+    expect(serializeKey('status')).toBe('status');
+  });
+
+  it('leaves underscore-prefixed keys unquoted', () => {
+    expect(serializeKey('_global')).toBe('_global');
+  });
+
+  it('leaves kebab-case keys unquoted', () => {
+    expect(serializeKey('display-name')).toBe('display-name');
+  });
+
+  it('quotes keys with spaces', () => {
+    expect(serializeKey('people involved')).toBe('"people involved"');
+  });
+
+  it('quotes keys with colons', () => {
+    expect(serializeKey('weird:key')).toBe('"weird:key"');
+  });
+});
+
+describe('serializeFrontmatter key quoting round-trip', () => {
+  function roundTrip(entries: Array<{ key: string; value: unknown }>) {
+    const yaml = '---\n' + serializeFrontmatter(entries) + '---\n';
+    return matter(yaml).data;
+  }
+
+  it('round-trips a key with spaces', () => {
+    const entries = [{ key: 'people involved', value: ['[[Raphael Berdugo]]'] }];
+    const parsed = roundTrip(entries);
+    expect(parsed['people involved']).toEqual(['[[Raphael Berdugo]]']);
+  });
+
+  it('round-trips an underscore-prefixed key unquoted', () => {
+    const entries = [{ key: '_global', value: 'yes-value' }];
+    const serialized = serializeFrontmatter(entries);
+    expect(serialized).toBe('_global: yes-value\n');
+    const parsed = roundTrip(entries);
+    expect(parsed['_global']).toBe('yes-value');
+  });
+
+  it('round-trips a kebab-case key unquoted', () => {
+    const entries = [{ key: 'display-name', value: 'My Project' }];
+    const serialized = serializeFrontmatter(entries);
+    expect(serialized).toBe('display-name: My Project\n');
+    const parsed = roundTrip(entries);
+    expect(parsed['display-name']).toBe('My Project');
+  });
+
+  it('round-trips a key with a colon', () => {
+    const entries = [{ key: 'weird:key', value: 'hello' }];
+    const parsed = roundTrip(entries);
+    expect(parsed['weird:key']).toBe('hello');
+  });
+
+  it('round-trips a safe key unquoted (regression)', () => {
+    const entries = [{ key: 'status', value: 'todo' }];
+    const serialized = serializeFrontmatter(entries);
+    expect(serialized).toBe('status: todo\n');
+    const parsed = roundTrip(entries);
+    expect(parsed['status']).toBe('todo');
   });
 
   it('returns empty string for empty entries', () => {
