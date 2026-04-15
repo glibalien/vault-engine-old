@@ -1,6 +1,12 @@
-# vault-engine
+# vault-engine-old (no longer improving; was a bad idea)
+
+## What it Was
 
 A local-first, MCP-native knowledge graph engine that indexes markdown vaults into SQLite for structured querying. Markdown files are canonical — the database is a derived, rebuildable index. The agent (via MCP tools) is the primary interface; editors are viewports.
+
+## What happened
+
+This fundamental principle was a bad one. Making the markdown the source of truth, and having the agent primarily interacting with a db that gets reindexed against the markdown, but that also needs to write to the markdown, and control the markdown... this felt increasingly like the wrong direction. The database should be the controller. The markdown should be buildable against the database. 
 
 ## Design Principles
 
